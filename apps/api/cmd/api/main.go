@@ -17,7 +17,7 @@ import (
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/postgres"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/rabbitmq"
 	redisx "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/redis"
-	s3store "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/s3"
+	miniostore "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/minio"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/jobs"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
@@ -115,9 +115,9 @@ func wireDeps(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
-	objectStore := s3store.New(cfg)
+	objectStore := miniostore.New(cfg)
 	if err := objectStore.EnsureBucket(ctx); err != nil {
-		logger.Warn("ensure bucket failed; continuing", "error", err)
+		logger.Warn("ensure minio bucket failed; continuing", "error", err)
 	}
 
 	cleanup = func() {

@@ -1,4 +1,4 @@
-package s3store
+package minio
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
 )
 
-// Store is an S3-compatible ObjectStore.
+// Store is a MinIO-backed ObjectStore (MinIO speaks the S3 API).
 type Store struct {
 	client *s3.Client
 	bucket string
@@ -24,14 +24,14 @@ type Store struct {
 var _ storage.ObjectStore = (*Store)(nil)
 
 func New(cfg config.Config) *Store {
-	resolver := s3.EndpointResolverFromURL(cfg.S3Endpoint)
+	resolver := s3.EndpointResolverFromURL(cfg.MinIOEndpoint)
 	client := s3.New(s3.Options{
-		Region: cfg.S3Region,
-		Credentials: credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, ""),
+		Region:           cfg.MinIORegion,
+		Credentials:      credentials.NewStaticCredentialsProvider(cfg.MinIOAccessKey, cfg.MinIOSecretKey, ""),
 		EndpointResolver: resolver,
-		UsePathStyle:     cfg.S3UsePathStyle,
+		UsePathStyle:     cfg.MinIOUsePathStyle,
 	})
-	return &Store{client: client, bucket: cfg.S3Bucket}
+	return &Store{client: client, bucket: cfg.MinIOBucket}
 }
 
 func (s *Store) EnsureBucket(ctx context.Context) error {
@@ -55,7 +55,7 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64, co
 	}
 	_, err := s.client.PutObject(ctx, input)
 	if err != nil {
-		return domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("put object: %v", err), true)
+		return domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("minio put object: %v", err), true)
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func (s *Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		if strings.Contains(strings.ToLower(err.Error()), "nosuchkey") || strings.Contains(strings.ToLower(err.Error()), "not found") {
 			return nil, domain.NewAppError(domain.CodeNotFound, "object not found", false)
 		}
-		return nil, domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("get object: %v", err), true)
+		return nil, domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("minio get object: %v", err), true)
 	}
 	return out.Body, nil
 }
@@ -80,7 +80,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("delete object: %v", err), true)
+		return domain.NewAppError(domain.CodeStorageError, fmt.Sprintf("minio delete object: %v", err), true)
 	}
 	return nil
 }

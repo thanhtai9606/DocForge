@@ -22,6 +22,7 @@ docforge-architecture:
   - RabbitMQ = job/stage work queue, retries, DLQ
   - Redis = progress cache / short-lived coordination / rate-limit helpers
   - PostgreSQL = durable source of truth for documents, jobs, artifacts
-  - S3-compatible storage = PDFs, page images, CDOM JSON, export artifacts
+  - MinIO = PDFs, page images, CDOM JSON, export artifacts (self-hosted; S3 API client under the hood)
 - Do not store large PDF binaries in PostgreSQL.
+- Do not require AWS S3 as a cloud dependency; MinIO is the object store.
 - Providers must not update DB/job state directly or bypass the orchestrator.

@@ -9,12 +9,12 @@ PDF Document Intelligence Platform — private-hosted service to upload PDFs, OC
 - `docs/PHASE1_PLAN.md` — Phase 1 foundation tree and scope
 - `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging)
 
-## Messaging (MVP)
+## Messaging & storage (MVP)
 
 - **RabbitMQ** — job/stage queue, retries, DLQ
 - **Redis** — progress cache / short-lived coordination
 - **PostgreSQL** — durable metadata and job state
-- **S3-compatible storage** — PDFs and artifacts
+- **MinIO** — PDFs and artifacts (self-hosted object storage)
 
 ## Phase 1 status
 
@@ -22,7 +22,7 @@ Foundation is implemented:
 
 - `packages/cdom` — CDOM types + validation
 - `apps/api` — domain, config, logging, REST `/api/v1`, application services
-- Infrastructure adapters: Postgres, Redis, RabbitMQ, S3/MinIO (+ in-memory for tests)
+- Infrastructure adapters: Postgres, Redis, RabbitMQ, MinIO (+ in-memory for tests)
 - `deployments/docker-compose.yml` — postgres, redis, rabbitmq, minio
 
 ### Run dependencies
