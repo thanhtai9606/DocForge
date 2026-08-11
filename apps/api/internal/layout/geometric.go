@@ -14,13 +14,14 @@ type Provider interface {
 	Analyze(ctx context.Context, doc *cdom.Document) error
 }
 
-// GeometricProvider sorts blocks top-to-bottom / left-to-right and fixes reading_order.
+// GeometricProvider sorts blocks top-to-bottom / left-to-right, reconstructs
+// lists/tables, and assigns final reading_order.
 type GeometricProvider struct{}
 
 func NewGeometric() *GeometricProvider { return &GeometricProvider{} }
 
 func (p *GeometricProvider) Name() string    { return "geometric-layout" }
-func (p *GeometricProvider) Version() string { return "1.0.0" }
+func (p *GeometricProvider) Version() string { return "1.1.0" }
 
 func (p *GeometricProvider) Analyze(_ context.Context, doc *cdom.Document) error {
 	if doc == nil {
@@ -31,19 +32,21 @@ func (p *GeometricProvider) Analyze(_ context.Context, doc *cdom.Document) error
 		page := &doc.Pages[i]
 		sort.SliceStable(page.Blocks, func(a, b int) bool {
 			ba, bb := page.Blocks[a].BBox, page.Blocks[b].BBox
-			// PDF-ish coords already normalized in extractor; compare top (y2) then x1.
 			if abs(ba[3]-bb[3]) > 2 {
 				return ba[3] > bb[3]
 			}
 			return ba[0] < bb[0]
 		})
 		for j := range page.Blocks {
-			order++
-			page.Blocks[j].ReadingOrder = order
-			// Promote short large-font paragraphs already marked heading; ensure lists later.
 			if page.Blocks[j].Type == cdom.BlockParagraph && looksLikeHeading(page.Blocks[j].Text) {
 				page.Blocks[j].Type = cdom.BlockHeading
 			}
+		}
+		reconstructListsAndTables(page)
+		for j := range page.Blocks {
+			order++
+			page.Blocks[j].ReadingOrder = order
+			assignChildReadingOrder(&page.Blocks[j], &order)
 		}
 	}
 	if doc.Processing == nil {
@@ -54,16 +57,12 @@ func (p *GeometricProvider) Analyze(_ context.Context, doc *cdom.Document) error
 	return nil
 }
 
-func looksLikeHeading(text string) bool {
-	if len(text) == 0 || len(text) > 80 {
-		return false
+func assignChildReadingOrder(blk *cdom.Block, order *int) {
+	for i := range blk.Children {
+		*order++
+		blk.Children[i].ReadingOrder = *order
+		assignChildReadingOrder(&blk.Children[i], order)
 	}
-	for _, r := range text {
-		if r == '.' || r == '?' || r == '!' {
-			return false
-		}
-	}
-	return true
 }
 
 func abs(v float64) float64 {
