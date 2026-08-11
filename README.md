@@ -66,6 +66,15 @@ For local smoke without infra:
 DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
 ```
 
+### Run worker (Phase 2)
+
+Requires compose infra (Postgres, Redis, RabbitMQ, MinIO):
+
+```bash
+set -a && source apps/api/configs/local.env.example && set +a
+go run ./apps/api/cmd/worker
+```
+
 ### Tests
 
 ```bash
