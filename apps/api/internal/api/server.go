@@ -8,38 +8,187 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/application"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/artifacts"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/auth"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/metrics"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/middleware"
 )
 
 // Server exposes REST handlers.
 type Server struct {
 	Service *application.Service
+	Auth    *auth.Service
+	Metrics *metrics.Registry
 }
 
-func NewServer(svc *application.Service) http.Handler {
-	s := &Server{Service: svc}
+// Options configures HTTP middleware and auth for Phase 4/5.
+type Options struct {
+	Auth           *auth.Service
+	Metrics        *metrics.Registry
+	CORSOrigins    []string
+	RequestTimeout time.Duration
+	RatePerMinute  int
+	RateBurst      int
+}
+
+func NewServer(svc *application.Service, opts ...Options) http.Handler {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	s := &Server{Service: svc, Auth: o.Auth, Metrics: o.Metrics}
+	if s.Auth == nil {
+		s.Auth = auth.New("", true, "http://localhost:5173", "http://localhost:8080", auth.ProviderConfig{}, auth.ProviderConfig{})
+	}
+	if s.Metrics == nil {
+		s.Metrics = metrics.New()
+	}
+	if o.RequestTimeout <= 0 {
+		o.RequestTimeout = 60 * time.Second
+	}
+	if o.RatePerMinute <= 0 {
+		o.RatePerMinute = 180
+	}
+	if o.RateBurst <= 0 {
+		o.RateBurst = 40
+	}
+	if len(o.CORSOrigins) == 0 {
+		o.CORSOrigins = []string{"http://localhost:5173", "http://127.0.0.1:5173"}
+	}
+
+	limiter := middleware.NewRateLimiter(o.RatePerMinute, o.RateBurst, s.Metrics)
 	r := chi.NewRouter()
+	r.Use(middleware.SecurityHeaders)
+	r.Use(middleware.CORS(o.CORSOrigins))
+	r.Use(middleware.Metrics(s.Metrics))
 	r.Use(requestIDMiddleware)
+	r.Use(s.Auth.Middleware)
+	r.Use(limiter.Middleware)
+	r.Use(middleware.Timeout(o.RequestTimeout))
+
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	r.Get("/metrics", s.Metrics.Handler())
+
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Get("/auth/providers", s.authProviders)
+		r.Get("/auth/{provider}/login", s.authLogin)
+		r.Get("/auth/{provider}/callback", s.authCallback)
+		r.Get("/auth/me", s.me)
+		r.Post("/auth/logout", s.logout)
+
+		r.Get("/documents", s.listDocuments)
 		r.Post("/documents", s.createDocument)
 		r.Get("/documents/{documentID}", s.getDocument)
+		r.Delete("/documents/{documentID}", s.deleteDocument)
 		r.Get("/documents/{documentID}/artifacts", s.listArtifacts)
+		r.Get("/documents/{documentID}/job", s.latestJob)
+		r.Get("/documents/{documentID}/original", s.downloadOriginal)
+
 		r.Get("/jobs/{jobID}", s.getJob)
 		r.Post("/jobs/{jobID}/cancel", s.cancelJob)
+		r.Post("/jobs/{jobID}/retry", s.retryJob)
+
 		r.Get("/artifacts/{artifactID}", s.getArtifact)
 		r.Get("/artifacts/{artifactID}/download", s.downloadArtifact)
 	})
 	return r
+}
+
+func (s *Server) authProviders(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"providers": s.Auth.EnabledProviders(),
+		"bypass":    s.Auth.Bypass,
+	})
+}
+
+func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	provider := chi.URLParam(r, "provider")
+	url, err := s.Auth.AuthCodeURL(provider)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
+	provider := chi.URLParam(r, "provider")
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		writeError(w, r, domain.NewAppError(domain.CodeUnauthorized, "missing oauth code/state", false))
+		return
+	}
+	token, _, err := s.Auth.HandleCallback(r.Context(), provider, code, state)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, s.Auth.FrontendCallbackURL(token), http.StatusFound)
+}
+
+func (s *Server) logout(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	if user, ok := auth.UserFromContext(r.Context()); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"user": user})
+		return
+	}
+	// Optional bearer on bypass/public paths.
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		user, err := s.Auth.Parse(strings.TrimPrefix(h, "Bearer "))
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"user": user})
+			return
+		}
+	}
+	if s.Auth.Bypass {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": map[string]string{
+				"email":    "dev@docforge.local",
+				"name":     "DocForge Dev",
+				"provider": "bypass",
+			},
+		})
+		return
+	}
+	writeError(w, r, domain.NewAppError(domain.CodeUnauthorized, "authentication required", false))
+}
+
+func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	docs, err := s.Service.ListDocuments(r.Context(), limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(docs))
+	for _, d := range docs {
+		items = append(items, map[string]any{
+			"document_id":    d.ID,
+			"filename":       d.Filename,
+			"content_type":   d.ContentType,
+			"size_bytes":     d.SizeBytes,
+			"page_count":     d.PageCount,
+			"status":         d.Status,
+			"output_formats": d.OutputFormats,
+			"created_at":     d.CreatedAt,
+			"updated_at":     d.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"documents": items})
 }
 
 func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +219,10 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if s.Metrics != nil {
+		s.Metrics.UploadsTotal.Add(1)
+		s.Metrics.JobsTotal.Add(1)
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"document_id": result.DocumentID,
 		"job_id":      result.JobID,
@@ -83,18 +236,7 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	var jobErr any
-	if job.ErrorCode != "" {
-		jobErr = map[string]any{"code": job.ErrorCode, "message": job.ErrorMsg}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"job_id":      job.ID,
-		"document_id": job.DocumentID,
-		"status":      job.Status,
-		"stage":       job.Stage,
-		"progress":    job.Progress,
-		"error":       jobErr,
-	})
+	writeJob(w, job)
 }
 
 func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +255,88 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
 		"output_formats": doc.OutputFormats,
 		"created_at":     doc.CreatedAt,
 		"updated_at":     doc.UpdatedAt,
+	})
+}
+
+func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request) {
+	if err := s.Service.DeleteDocument(r.Context(), chi.URLParam(r, "documentID")); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) latestJob(w http.ResponseWriter, r *http.Request) {
+	job, err := s.Service.LatestJobForDocument(r.Context(), chi.URLParam(r, "documentID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJob(w, job)
+}
+
+func (s *Server) downloadOriginal(w http.ResponseWriter, r *http.Request) {
+	doc, rc, err := s.Service.OpenOriginal(r.Context(), chi.URLParam(r, "documentID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, doc.Filename))
+	if doc.SizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(doc.SizeBytes, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	job, err := s.Service.CancelJob(r.Context(), chi.URLParam(r, "jobID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if s.Metrics != nil {
+		s.Metrics.JobsCancelled.Add(1)
+	}
+	writeJob(w, job)
+}
+
+func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
+	job, err := s.Service.RetryJob(r.Context(), chi.URLParam(r, "jobID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if s.Metrics != nil {
+		s.Metrics.JobsTotal.Add(1)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"job_id":      job.ID,
+		"document_id": job.DocumentID,
+		"status":      job.Status,
+		"stage":       job.Stage,
+		"progress":    job.Progress,
+		"attempts":    job.Attempts,
+	})
+}
+
+func writeJob(w http.ResponseWriter, job *domain.Job) {
+	var jobErr any
+	if job.ErrorCode != "" {
+		jobErr = map[string]any{"code": job.ErrorCode, "message": job.ErrorMsg}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job_id":      job.ID,
+		"document_id": job.DocumentID,
+		"status":      job.Status,
+		"stage":       job.Stage,
+		"progress":    job.Progress,
+		"attempts":    job.Attempts,
+		"error":       jobErr,
+		"created_at":  job.CreatedAt,
+		"updated_at":  job.UpdatedAt,
 	})
 }
 
@@ -197,21 +421,6 @@ func (s *Server) downloadArtifact(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
-func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
-	job, err := s.Service.CancelJob(r.Context(), chi.URLParam(r, "jobID"))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"job_id":      job.ID,
-		"document_id": job.DocumentID,
-		"status":      job.Status,
-		"stage":       job.Stage,
-		"progress":    job.Progress,
-	})
-}
-
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -246,6 +455,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch appErr.Code {
 	case domain.CodeNotFound:
 		status = http.StatusNotFound
+	case domain.CodeUnauthorized:
+		status = http.StatusUnauthorized
+	case domain.CodeRateLimited:
+		status = http.StatusTooManyRequests
 	case domain.CodeFileTooLarge:
 		status = http.StatusRequestEntityTooLarge
 	case domain.CodeInternal, domain.CodeStorageError, domain.CodeOCRProviderError:

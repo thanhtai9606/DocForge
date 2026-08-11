@@ -58,10 +58,28 @@ func (r *DocumentRepo) ListRecent(_ context.Context, limit int) ([]domain.Docume
 	for _, d := range r.data {
 		out = append(out, *d)
 	}
+	// newest first
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].CreatedAt.After(out[i].CreatedAt) {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (r *DocumentRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.data[id]; !ok {
+		return domain.NewAppError(domain.CodeNotFound, "document not found", false)
+	}
+	delete(r.data, id)
+	return nil
 }
 
 // JobRepo is an in-memory JobRepository.
@@ -105,6 +123,36 @@ func (r *JobRepo) Update(_ context.Context, job *domain.Job) error {
 	return nil
 }
 
+func (r *JobRepo) LatestByDocument(_ context.Context, documentID string) (*domain.Job, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var best *domain.Job
+	for _, j := range r.data {
+		if j.DocumentID != documentID {
+			continue
+		}
+		if best == nil || j.CreatedAt.After(best.CreatedAt) {
+			cp := *j
+			best = &cp
+		}
+	}
+	if best == nil {
+		return nil, domain.NewAppError(domain.CodeNotFound, "job not found", false)
+	}
+	return best, nil
+}
+
+func (r *JobRepo) DeleteByDocument(_ context.Context, documentID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, j := range r.data {
+		if j.DocumentID == documentID {
+			delete(r.data, id)
+		}
+	}
+	return nil
+}
+
 // ArtifactRepo is an in-memory ArtifactRepository.
 type ArtifactRepo struct {
 	mu   sync.RWMutex
@@ -144,6 +192,17 @@ func (r *ArtifactRepo) Get(_ context.Context, id string) (*domain.Artifact, erro
 	}
 	cp := *a
 	return &cp, nil
+}
+
+func (r *ArtifactRepo) DeleteByDocument(_ context.Context, documentID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, a := range r.data {
+		if a.DocumentID == documentID {
+			delete(r.data, id)
+		}
+	}
+	return nil
 }
 
 // ObjectStore is an in-memory ObjectStore.

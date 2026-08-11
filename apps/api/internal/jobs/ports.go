@@ -12,6 +12,7 @@ type DocumentRepository interface {
 	Get(ctx context.Context, id string) (*domain.Document, error)
 	Update(ctx context.Context, doc *domain.Document) error
 	ListRecent(ctx context.Context, limit int) ([]domain.Document, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // JobRepository persists job state.
@@ -19,6 +20,8 @@ type JobRepository interface {
 	Create(ctx context.Context, job *domain.Job) error
 	Get(ctx context.Context, id string) (*domain.Job, error)
 	Update(ctx context.Context, job *domain.Job) error
+	LatestByDocument(ctx context.Context, documentID string) (*domain.Job, error)
+	DeleteByDocument(ctx context.Context, documentID string) error
 }
 
 // ArtifactRepository persists artifact metadata.
@@ -26,6 +29,7 @@ type ArtifactRepository interface {
 	Create(ctx context.Context, artifact *domain.Artifact) error
 	ListByDocument(ctx context.Context, documentID string) ([]domain.Artifact, error)
 	Get(ctx context.Context, id string) (*domain.Artifact, error)
+	DeleteByDocument(ctx context.Context, documentID string) error
 }
 
 // QueuePublisher publishes work messages.

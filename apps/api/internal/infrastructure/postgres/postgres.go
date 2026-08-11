@@ -103,6 +103,18 @@ func (r *DocumentRepo) ListRecent(ctx context.Context, limit int) ([]domain.Docu
 	return out, rows.Err()
 }
 
+func (r *DocumentRepo) Delete(ctx context.Context, id string) error {
+	res, err := r.store.db.ExecContext(ctx, `DELETE FROM documents WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return domain.NewAppError(domain.CodeNotFound, "document not found", false)
+	}
+	return nil
+}
+
 type JobRepo struct{ store *Store }
 
 func NewJobRepo(store *Store) *JobRepo { return &JobRepo{store: store} }
@@ -144,6 +156,25 @@ func (r *JobRepo) Update(ctx context.Context, job *domain.Job) error {
 		return domain.NewAppError(domain.CodeNotFound, "job not found", false)
 	}
 	return nil
+}
+
+func (r *JobRepo) LatestByDocument(ctx context.Context, documentID string) (*domain.Job, error) {
+	row := r.store.db.QueryRowContext(ctx, `
+		SELECT id, document_id, status, stage, progress, error_code, error_msg, attempts, created_at, updated_at
+		FROM jobs WHERE document_id=$1 ORDER BY created_at DESC LIMIT 1`, documentID)
+	var job domain.Job
+	if err := row.Scan(&job.ID, &job.DocumentID, &job.Status, &job.Stage, &job.Progress, &job.ErrorCode, &job.ErrorMsg, &job.Attempts, &job.CreatedAt, &job.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, domain.NewAppError(domain.CodeNotFound, "job not found", false)
+		}
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (r *JobRepo) DeleteByDocument(ctx context.Context, documentID string) error {
+	_, err := r.store.db.ExecContext(ctx, `DELETE FROM jobs WHERE document_id=$1`, documentID)
+	return err
 }
 
 type ArtifactRepo struct{ store *Store }
@@ -192,6 +223,11 @@ func (r *ArtifactRepo) Get(ctx context.Context, id string) (*domain.Artifact, er
 	return &a, nil
 }
 
+func (r *ArtifactRepo) DeleteByDocument(ctx context.Context, documentID string) error {
+	_, err := r.store.db.ExecContext(ctx, `DELETE FROM artifacts WHERE document_id=$1`, documentID)
+	return err
+}
+
 // EnsureSchema applies the bootstrap migration for local/dev usage.
 func EnsureSchema(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, `
@@ -209,7 +245,7 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE TABLE IF NOT EXISTS jobs (
     id UUID PRIMARY KEY,
-    document_id UUID NOT NULL REFERENCES documents(id),
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     stage TEXT NOT NULL DEFAULT 'queued',
     progress INT NOT NULL DEFAULT 0,
@@ -222,8 +258,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_document_id ON jobs(document_id);
 CREATE TABLE IF NOT EXISTS artifacts (
     id UUID PRIMARY KEY,
-    document_id UUID NOT NULL REFERENCES documents(id),
-    job_id UUID NOT NULL REFERENCES jobs(id),
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
     format TEXT NOT NULL,
     storage_key TEXT NOT NULL,
