@@ -1,0 +1,15 @@
+.git
+.cursor
+.github
+**/node_modules
+**/.DS_Store
+tmp/
+bin/
+dist/
+coverage/
+*.test
+apps/web
+providers
+docs
+scripts
+tests
