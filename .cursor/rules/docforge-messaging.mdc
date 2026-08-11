@@ -16,4 +16,5 @@ docforge-messaging:
 - Retry only transient failures (worker unavailable, timeout, temporary storage/network, redelivery cases).
 - Default retry policy: max_attempts = 3 with exponential backoff.
 - Local/dev compose should include postgres, minio, redis, and rabbitmq.
+- GitHub Actions publishes multi-arch API images to GHCR (`ghcr.io/<owner>/docforge-api`) only from `main`.
 - Do not introduce Kafka unless explicitly requested.
