@@ -1,0 +1,22 @@
+# Binaries / local
+bin/
+dist/
+*.exe
+*.test
+*.out
+.DS_Store
+
+# Env
+.env
+*.env.local
+apps/api/configs/local.env
+
+# IDE / tooling
+.idea/
+.vscode/
+node_modules/
+
+# Runtime data
+tmp/
+data/
+coverage/

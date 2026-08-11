@@ -16,6 +16,36 @@ PDF Document Intelligence Platform — private-hosted service to upload PDFs, OC
 - **PostgreSQL** — durable metadata and job state
 - **S3-compatible storage** — PDFs and artifacts
 
-## Status
+## Phase 1 status
 
-Foundation context and Cursor rules are in place. Application code starts with Phase 1 per `docs/PHASE1_PLAN.md`.
+Foundation is implemented:
+
+- `packages/cdom` — CDOM types + validation
+- `apps/api` — domain, config, logging, REST `/api/v1`, application services
+- Infrastructure adapters: Postgres, Redis, RabbitMQ, S3/MinIO (+ in-memory for tests)
+- `deployments/docker-compose.yml` — postgres, redis, rabbitmq, minio
+
+### Run dependencies
+
+```bash
+docker compose -f deployments/docker-compose.yml up -d
+```
+
+### Run API
+
+```bash
+set -a && source apps/api/configs/local.env.example && set +a
+go run ./apps/api/cmd/api
+```
+
+For local smoke without infra:
+
+```bash
+DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
+```
+
+### Tests
+
+```bash
+./scripts/test.sh
+```
