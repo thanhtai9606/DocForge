@@ -1,18 +1,20 @@
-# Implementation status (Phase 1)
+# Implementation status
 
-## Done
-- Monorepo scaffold (`apps/api`, `packages/cdom`, providers stubs, compose)
-- CDOM types + validation
-- Domain models (Document/Job/Artifact), job transitions, AppError codes
-- Config + structured logging (`request_id`)
-- Application use cases: upload, get job/document, artifacts, cancel
-- REST `/api/v1` handlers + `/healthz`
-- Adapters: Postgres, Redis progress, RabbitMQ publisher (+ DLQ declare), object store, in-memory test doubles
-- Unit/API tests for CDOM, domain, config, logging, application, API, memory adapters, RabbitMQ message shape
+## Phase 1 — Done
+Foundation API, CDOM, adapters, tests, CodeGraph, MinIO, branching model.
 
-## Not done yet (later phases)
-- Orchestrator pipeline stages (detect/extract/ocr/layout/normalize)
-- AI/OCR worker consumers
-- Markdown/DOCX/JSON exporters
+## Phase 2/3 — Production pipeline (current)
+- PDF extract via `rsc.io/pdf` with positioned text + bounded page concurrency
+- Document classify digital/scanned/mixed
+- Parallel OCR fan-out for scanned/mixed pages (replaceable provider; stub default)
+- Geometric layout provider assigns final `reading_order`
+- CDOM normalize + artifact persistence
+- Exporters: Markdown + JSON (CDOM-only)
+- Idempotent artifact reuse before re-running expensive stages
+- RabbitMQ worker consumer with permanent vs retryable failure handling
+
+## Still open
+- Real OCR runtime (PaddleOCR/Python or ONNX)
+- Stronger table/list reconstruction & DOCX exporter
 - React frontend
-- Full hardening (rate limits, cleanup policies, observability dashboards)
+- Hardening: quotas, cleanup TTL, richer metrics

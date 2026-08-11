@@ -1,0 +1,12 @@
+---
+description: Git branching model — develop integration, main releases
+alwaysApply: true
+---
+
+docforge-branching:
+
+- Integration branch is `develop`. Open feature/fix PRs against `develop`, not `main`.
+- `main` is the release branch. Promote to `main` only via a controlled PR from `develop` (or a release branch cut from `develop`).
+- GitHub Actions image publish runs only on `main` (and version tags / workflow_dispatch) — not on `develop` and not on PRs.
+- Do not push feature work directly to `main`.
+- Prefer conventional commits and small focused PRs into `develop`.

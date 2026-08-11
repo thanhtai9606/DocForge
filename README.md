@@ -8,9 +8,17 @@ PDF Document Intelligence Platform — private-hosted service to upload PDFs, OC
 - `docs/CURSOR_INSTRUCTIONS.md` — coding-agent rules
 - `docs/PHASE1_PLAN.md` — Phase 1 foundation tree and scope
 - `docs/CODEGRAPH.md` — CodeGraph setup (fewer AI discovery tokens)
+- `docs/BRANCHING.md` — `develop` integration / `main` release flow
 - `AGENTS.md` — agent notes including CodeGraph CLI fallback
-- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging, codegraph)
+- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging, codegraph, branching)
 - `.cursor/mcp.json` — CodeGraph MCP server for Cursor
+
+## Branching
+
+- **`develop`** — integration branch; open all feature PRs here first
+- **`main`** — release branch; GitHub Actions image publish runs only here
+
+See `docs/BRANCHING.md`.
 
 ## CodeGraph (AI token optimization)
 
@@ -58,8 +66,51 @@ For local smoke without infra:
 DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
 ```
 
+### Run worker (Phase 2)
+
+Requires compose infra (Postgres, Redis, RabbitMQ, MinIO):
+
+```bash
+set -a && source apps/api/configs/local.env.example && set +a
+go run ./apps/api/cmd/worker
+```
+
 ### Tests
 
 ```bash
 ./scripts/test.sh
 ```
+
+## Container images (GHCR)
+
+On push to **`main`** (and `v*` tags / manual dispatch), GitHub Actions builds multi-arch images:
+
+- `ghcr.io/<owner>/docforge-api`
+- `ghcr.io/<owner>/docforge-worker`
+
+Platforms: `linux/amd64`, `linux/arm64`.
+
+Tags (example):
+
+```text
+ghcr.io/<owner>/docforge-api:latest
+ghcr.io/<owner>/docforge-api:sha-<commit>
+ghcr.io/<owner>/docforge-worker:latest
+ghcr.io/<owner>/docforge-worker:sha-<commit>
+```
+
+Local build (from repo root):
+
+```bash
+docker build -f apps/api/Dockerfile -t docforge-api:local .
+docker build -f apps/api/Dockerfile.worker -t docforge-worker:local .
+```
+
+Run published API with local infra:
+
+```bash
+docker compose -f deployments/docker-compose.yml up -d
+docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml up -d api
+```
+
+Package visibility: ensure the `docforge-api` GHCR package allows the intended audience (private/public) in GitHub Packages settings.
