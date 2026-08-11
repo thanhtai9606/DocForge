@@ -74,7 +74,7 @@ DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
 
 ## Container images (GHCR)
 
-GitHub Actions builds multi-arch (`linux/amd64`, `linux/arm64`) images and pushes to GitHub Container Registry on pushes to `main` and version tags (`v*`).
+GitHub Actions builds multi-arch (`linux/amd64`, `linux/arm64`) images and pushes to GHCR **only on `main`** (also `v*` tags / `workflow_dispatch`). It does not run on `develop` or pull requests.
 
 Image:
 
