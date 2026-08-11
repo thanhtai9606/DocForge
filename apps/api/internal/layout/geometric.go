@@ -21,7 +21,7 @@ type GeometricProvider struct{}
 func NewGeometric() *GeometricProvider { return &GeometricProvider{} }
 
 func (p *GeometricProvider) Name() string    { return "geometric-layout" }
-func (p *GeometricProvider) Version() string { return "1.1.0" }
+func (p *GeometricProvider) Version() string { return "1.2.0" }
 
 func (p *GeometricProvider) Analyze(_ context.Context, doc *cdom.Document) error {
 	if doc == nil {

@@ -3,14 +3,17 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/application"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/artifacts"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
 )
@@ -33,6 +36,7 @@ func NewServer(svc *application.Service) http.Handler {
 		r.Get("/documents/{documentID}/artifacts", s.listArtifacts)
 		r.Get("/jobs/{jobID}", s.getJob)
 		r.Post("/jobs/{jobID}/cancel", s.cancelJob)
+		r.Get("/artifacts/{artifactID}", s.getArtifact)
 		r.Get("/artifacts/{artifactID}/download", s.downloadArtifact)
 	})
 	return r
@@ -113,24 +117,66 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
-	artifacts, err := s.Service.ListArtifacts(r.Context(), chi.URLParam(r, "documentID"))
+	documentID := chi.URLParam(r, "documentID")
+	doc, err := s.Service.GetDocument(r.Context(), documentID)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	items := make([]map[string]any, 0, len(artifacts))
-	for _, a := range artifacts {
+	list, err := s.Service.ListArtifacts(r.Context(), documentID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	kindFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	formatFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	items := make([]map[string]any, 0, len(list))
+	for _, a := range list {
+		if kindFilter != "" && strings.ToLower(a.Kind) != kindFilter {
+			continue
+		}
+		if formatFilter != "" && strings.ToLower(a.Format) != formatFilter {
+			continue
+		}
+		name := artifacts.DownloadName(doc, &a)
 		items = append(items, map[string]any{
-			"artifact_id": a.ID,
-			"document_id": a.DocumentID,
-			"job_id":      a.JobID,
-			"kind":        a.Kind,
-			"format":      a.Format,
-			"size_bytes":  a.SizeBytes,
-			"created_at":  a.CreatedAt,
+			"artifact_id":   a.ID,
+			"document_id":   a.DocumentID,
+			"job_id":        a.JobID,
+			"kind":          a.Kind,
+			"format":        a.Format,
+			"filename":      name,
+			"size_bytes":    a.SizeBytes,
+			"download_url":  "/api/v1/artifacts/" + a.ID + "/download",
+			"created_at":    a.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": items})
+}
+
+func (s *Server) getArtifact(w http.ResponseWriter, r *http.Request) {
+	artifact, err := s.Service.GetArtifact(r.Context(), chi.URLParam(r, "artifactID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	doc, err := s.Service.GetDocument(r.Context(), artifact.DocumentID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	name := artifacts.DownloadName(doc, artifact)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_id":  artifact.ID,
+		"document_id":  artifact.DocumentID,
+		"job_id":       artifact.JobID,
+		"kind":         artifact.Kind,
+		"format":       artifact.Format,
+		"filename":     name,
+		"size_bytes":   artifact.SizeBytes,
+		"download_url": "/api/v1/artifacts/" + artifact.ID + "/download",
+		"created_at":   artifact.CreatedAt,
+	})
 }
 
 func (s *Server) downloadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -140,8 +186,13 @@ func (s *Server) downloadArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	w.Header().Set("Content-Type", contentTypeForFormat(artifact.Format))
-	w.Header().Set("Content-Disposition", "attachment; filename="+artifact.ID+"."+artifact.Format)
+	doc, _ := s.Service.GetDocument(r.Context(), artifact.DocumentID)
+	name := artifacts.DownloadName(doc, artifact)
+	w.Header().Set("Content-Type", artifacts.ContentTypeForFormat(artifact.Format))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	if artifact.SizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, rc)
 }
@@ -220,17 +271,4 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
-}
-
-func contentTypeForFormat(format string) string {
-	switch strings.ToLower(format) {
-	case "markdown", "md":
-		return "text/markdown"
-	case "docx":
-		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-	case "json":
-		return "application/json"
-	default:
-		return "application/octet-stream"
-	}
 }

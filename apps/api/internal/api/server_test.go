@@ -202,8 +202,25 @@ func TestArtifactsListAndDownload(t *testing.T) {
 	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type=%q", ct)
 	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "sample.json") {
+		t.Fatalf("content-disposition=%q", cd)
+	}
 	if rr.Body.String() != `{"ok":true}` {
 		t.Fatalf("body=%q", rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/artifacts/art-json", nil)
+	rr = httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte(`"download_url"`)) {
+		t.Fatalf("get artifact status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/documents/"+docID+"/artifacts?kind=export&format=json", nil)
+	rr = httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte("art-json")) {
+		t.Fatalf("filtered list status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

@@ -178,45 +178,75 @@ func groupIntoLines(texts []pdf.Text) []TextBlock {
 	out := make([]TextBlock, 0, len(lines))
 	for _, ln := range lines {
 		sort.Sort(pdf.TextHorizontal(ln.items))
-		var b strings.Builder
-		minX, maxX := ln.items[0].X, ln.items[0].X
-		font := ln.items[0].FontSize
-		for i, it := range ln.items {
-			if i > 0 {
-				gap := it.X - maxX
-				if gap > font*0.3 {
-					b.WriteByte(' ')
+		// Split a visual line into column-like segments when horizontal gaps are large.
+		// Small gaps stay within a cell; large gaps become separate TextBlocks for table layout.
+		type seg struct {
+			b          strings.Builder
+			minX, maxX float64
+			font       float64
+			started    bool
+		}
+		flush := func(s *seg) {
+			if !s.started {
+				return
+			}
+			text := strings.TrimSpace(s.b.String())
+			if text == "" {
+				*s = seg{}
+				return
+			}
+			h := s.font
+			if h <= 0 {
+				h = 10
+			}
+			out = append(out, TextBlock{
+				Text:       text,
+				X:          s.minX,
+				Y:          ln.y,
+				W:          s.maxX - s.minX,
+				H:          h,
+				FontSize:   s.font,
+				Confidence: 0.98,
+			})
+			*s = seg{}
+		}
+		var cur seg
+		for _, it := range ln.items {
+			font := it.FontSize
+			if font <= 0 {
+				font = 10
+			}
+			colGap := font * 2.5
+			if colGap < 18 {
+				colGap = 18
+			}
+			if cur.started {
+				gap := it.X - cur.maxX
+				if gap > colGap {
+					flush(&cur)
+				} else if gap > font*0.3 {
+					cur.b.WriteByte(' ')
 				}
 			}
-			b.WriteString(it.S)
-			if it.X < minX {
-				minX = it.X
+			if !cur.started {
+				cur.started = true
+				cur.minX = it.X
+				cur.maxX = it.X + it.W
+				cur.font = font
+			}
+			cur.b.WriteString(it.S)
+			if it.X < cur.minX {
+				cur.minX = it.X
 			}
 			right := it.X + it.W
-			if right > maxX {
-				maxX = right
+			if right > cur.maxX {
+				cur.maxX = right
 			}
-			if it.FontSize > font {
-				font = it.FontSize
+			if font > cur.font {
+				cur.font = font
 			}
 		}
-		text := strings.TrimSpace(b.String())
-		if text == "" {
-			continue
-		}
-		h := font
-		if h <= 0 {
-			h = 10
-		}
-		out = append(out, TextBlock{
-			Text:       text,
-			X:          minX,
-			Y:          ln.y,
-			W:          maxX - minX,
-			H:          h,
-			FontSize:   font,
-			Confidence: 0.98,
-		})
+		flush(&cur)
 	}
 	return out
 }

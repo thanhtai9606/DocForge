@@ -66,3 +66,39 @@ func TestGeometricReconstructsListsAndTables(t *testing.T) {
 		t.Fatalf("processing=%v", doc.Processing)
 	}
 }
+
+func TestGeometricReconstructsSpaceAndColumnTables(t *testing.T) {
+	doc := &cdom.Document{
+		SchemaVersion: cdom.SchemaVersion,
+		DocumentID:    "d2",
+		Source:        cdom.Source{Filename: "t.pdf", MimeType: "application/pdf", PageCount: 1},
+		Metadata:      map[string]any{},
+		Processing:    map[string]any{},
+		Pages: []cdom.Page{{
+			PageNumber: 1, Width: 612, Height: 792,
+			Blocks: []cdom.Block{
+				{ID: "s1", Type: cdom.BlockParagraph, BBox: cdom.BBox{72, 700, 400, 720}, Confidence: 0.9, Text: "Name    Qty"},
+				{ID: "s2", Type: cdom.BlockParagraph, BBox: cdom.BBox{72, 680, 400, 700}, Confidence: 0.9, Text: "Widget  3"},
+				{ID: "c1", Type: cdom.BlockParagraph, BBox: cdom.BBox{72, 600, 150, 620}, Confidence: 0.9, Text: "A"},
+				{ID: "c2", Type: cdom.BlockParagraph, BBox: cdom.BBox{220, 600, 300, 620}, Confidence: 0.9, Text: "B"},
+				{ID: "c3", Type: cdom.BlockParagraph, BBox: cdom.BBox{72, 560, 150, 580}, Confidence: 0.9, Text: "C"},
+				{ID: "c4", Type: cdom.BlockParagraph, BBox: cdom.BBox{220, 560, 300, 580}, Confidence: 0.9, Text: "D"},
+			},
+		}},
+	}
+	if err := layout.NewGeometric().Analyze(context.Background(), doc); err != nil {
+		t.Fatal(err)
+	}
+	var tables int
+	for _, b := range doc.Pages[0].Blocks {
+		if b.Type == cdom.BlockTable {
+			tables++
+			if len(b.Children) < 2 {
+				t.Fatalf("table rows=%d", len(b.Children))
+			}
+		}
+	}
+	if tables < 2 {
+		t.Fatalf("expected space+geometric tables, got %d blocks=%+v", tables, doc.Pages[0].Blocks)
+	}
+}

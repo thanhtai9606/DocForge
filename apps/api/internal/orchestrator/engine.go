@@ -20,6 +20,7 @@ import (
 	"github.com/thanhtai9606/DocForge/apps/api/internal/jobs"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/layout"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/pdfx"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/postprocess"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
 	"github.com/thanhtai9606/DocForge/packages/cdom"
 )
@@ -229,6 +230,11 @@ func (e *Engine) Run(ctx context.Context, jobID string) (*RunResult, error) {
 	if err := layoutProvider.Analyze(ctx, cdomDoc); err != nil {
 		return nil, e.fail(ctx, job, doc, domain.CodeLayoutFailed, err.Error(), false)
 	}
+
+	if err := e.checkpoint(ctx, job, StagePostprocess, 70); err != nil {
+		return e.handleStepErr(ctx, job, doc, err)
+	}
+	postprocess.Clean(cdomDoc)
 
 	if err := e.checkpoint(ctx, job, StageNormalize, 75); err != nil {
 		return e.handleStepErr(ctx, job, doc, err)

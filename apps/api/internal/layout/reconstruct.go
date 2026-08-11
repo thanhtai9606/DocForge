@@ -14,9 +14,8 @@ var (
 	reOrdered = regexp.MustCompile(`^(?:\(?\d+[).]|\d+\))\s+(.*)$`)
 )
 
-// reconstructListsAndTables groups consecutive list-like and pipe-delimited
-// paragraph blocks into structured CDOM list/table trees. Reading order is
-// reassigned by the caller after this runs.
+// reconstructListsAndTables groups consecutive list-like, pipe-delimited, and
+// geometrically aligned multi-column runs into structured CDOM trees.
 func reconstructListsAndTables(page *cdom.Page) {
 	if page == nil || len(page.Blocks) == 0 {
 		return
@@ -34,6 +33,16 @@ func reconstructListsAndTables(page *cdom.Page) {
 			if rows, n := collectPipeTableRun(page.Blocks, i); n >= 2 {
 				out = append(out, buildTableBlock(page.PageNumber, len(out)+1, rows))
 				i += n
+				continue
+			}
+			if rows, n := collectSpaceTableRun(page.Blocks, i); n >= 2 {
+				out = append(out, buildTableBlock(page.PageNumber, len(out)+1, rows))
+				i += n
+				continue
+			}
+			if geoRows, consumed := collectGeometricTableRun(page.Blocks, i); consumed >= 2 {
+				out = append(out, buildTableBlockFromRows(page.PageNumber, len(out)+1, geoRows))
+				i += consumed
 				continue
 			}
 		}
@@ -128,6 +137,138 @@ func collectPipeTableRun(blocks []cdom.Block, start int) (rows [][]string, n int
 	return rows, n
 }
 
+func collectSpaceTableRun(blocks []cdom.Block, start int) (rows [][]string, n int) {
+	cols := -1
+	for i := start; i < len(blocks); i++ {
+		blk := blocks[i]
+		if !isPlainTextBlock(blk) {
+			break
+		}
+		cells := splitMultiSpaceCells(blk.Text)
+		if len(cells) < 2 {
+			break
+		}
+		if cols < 0 {
+			cols = len(cells)
+		} else if len(cells) != cols {
+			break
+		}
+		rows = append(rows, cells)
+		n++
+	}
+	if len(rows) < 2 {
+		return nil, 0
+	}
+	return rows, n
+}
+
+var reMultiSpace = regexp.MustCompile(`\s{2,}`)
+
+func splitMultiSpaceCells(text string) []string {
+	t := strings.TrimSpace(text)
+	if t == "" || !reMultiSpace.MatchString(t) {
+		return nil
+	}
+	parts := reMultiSpace.Split(t, -1)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+// collectGeometricTableRun clusters same-Y multi-cell rows into a table.
+// Returns the table rows and how many source blocks were consumed.
+func collectGeometricTableRun(blocks []cdom.Block, start int) (rows [][]cdom.Block, consumed int) {
+	i := start
+	var colCenters []float64
+	for i < len(blocks) {
+		rowBlocks, n := takeSameYRow(blocks, i)
+		if n == 0 {
+			break
+		}
+		if len(rowBlocks) < 2 {
+			break
+		}
+		centers := make([]float64, len(rowBlocks))
+		for ci, b := range rowBlocks {
+			centers[ci] = (b.BBox[0] + b.BBox[2]) / 2
+		}
+		if colCenters == nil {
+			colCenters = centers
+		} else if !compatibleColumns(colCenters, centers, 12) {
+			break
+		}
+		// Normalize cell count to first row by padding/truncating rarely needed;
+		// require same length for a clean table.
+		if len(rowBlocks) != len(colCenters) {
+			break
+		}
+		rows = append(rows, rowBlocks)
+		consumed += n
+		i += n
+	}
+	if len(rows) < 2 {
+		return nil, 0
+	}
+	return rows, consumed
+}
+
+func takeSameYRow(blocks []cdom.Block, start int) ([]cdom.Block, int) {
+	if start >= len(blocks) || !isPlainTextBlock(blocks[start]) {
+		return nil, 0
+	}
+	base := blocks[start]
+	yMid := (base.BBox[1] + base.BBox[3]) / 2
+	row := []cdom.Block{base}
+	n := 1
+	for i := start + 1; i < len(blocks); i++ {
+		blk := blocks[i]
+		if !isPlainTextBlock(blk) {
+			break
+		}
+		mid := (blk.BBox[1] + blk.BBox[3]) / 2
+		if absFloat(mid-yMid) > 3 {
+			break
+		}
+		// Must be to the right (already sorted LTR within band).
+		if blk.BBox[0]+1 < row[len(row)-1].BBox[0] {
+			break
+		}
+		row = append(row, blk)
+		n++
+	}
+	if len(row) < 2 {
+		return nil, 0
+	}
+	return row, n
+}
+
+func compatibleColumns(ref, got []float64, tol float64) bool {
+	if len(ref) != len(got) {
+		return false
+	}
+	for i := range ref {
+		if absFloat(ref[i]-got[i]) > tol {
+			return false
+		}
+	}
+	return true
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func splitPipeCells(text string) []string {
 	t := strings.TrimSpace(text)
 	if !strings.Contains(t, "|") {
@@ -184,7 +325,7 @@ func buildTableBlock(pageNumber, idx int, rows [][]string) cdom.Block {
 				ID:         fmt.Sprintf("p%d-t%d-r%d-c%d", pageNumber, idx, ri+1, ci+1),
 				Type:       cdom.BlockTableCell,
 				BBox:       cdom.BBox{},
-				Confidence: 0.7,
+				Confidence: 0.75,
 				Text:       text,
 			})
 		}
@@ -192,7 +333,7 @@ func buildTableBlock(pageNumber, idx int, rows [][]string) cdom.Block {
 			ID:         fmt.Sprintf("p%d-t%d-r%d", pageNumber, idx, ri+1),
 			Type:       cdom.BlockTableRow,
 			BBox:       cdom.BBox{},
-			Confidence: 0.7,
+			Confidence: 0.75,
 			Children:   cells,
 		})
 	}
@@ -200,8 +341,40 @@ func buildTableBlock(pageNumber, idx int, rows [][]string) cdom.Block {
 		ID:         fmt.Sprintf("p%d-table%d", pageNumber, idx),
 		Type:       cdom.BlockTable,
 		BBox:       cdom.BBox{},
-		Confidence: 0.7,
+		Confidence: 0.75,
 		Children:   children,
+		Attributes: map[string]any{"reconstruction": "pipe_or_space"},
+	}
+}
+
+func buildTableBlockFromRows(pageNumber, idx int, rows [][]cdom.Block) cdom.Block {
+	children := make([]cdom.Block, 0, len(rows))
+	var all []cdom.Block
+	for ri, row := range rows {
+		cells := make([]cdom.Block, 0, len(row))
+		for ci, src := range row {
+			cell := src
+			cell.ID = fmt.Sprintf("p%d-t%d-r%d-c%d", pageNumber, idx, ri+1, ci+1)
+			cell.Type = cdom.BlockTableCell
+			cell.Children = nil
+			cells = append(cells, cell)
+			all = append(all, cell)
+		}
+		children = append(children, cdom.Block{
+			ID:         fmt.Sprintf("p%d-t%d-r%d", pageNumber, idx, ri+1),
+			Type:       cdom.BlockTableRow,
+			BBox:       unionBBox(cells),
+			Confidence: minConfidence(cells),
+			Children:   cells,
+		})
+	}
+	return cdom.Block{
+		ID:         fmt.Sprintf("p%d-table%d", pageNumber, idx),
+		Type:       cdom.BlockTable,
+		BBox:       unionBBox(all),
+		Confidence: minConfidence(all),
+		Children:   children,
+		Attributes: map[string]any{"reconstruction": "geometric_columns"},
 	}
 }
 
