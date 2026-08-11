@@ -1,0 +1,15 @@
+---
+description: Prefer production efficiency and correctness over simplistic shortcuts
+alwaysApply: true
+---
+
+docforge-quality:
+
+- Optimize for production efficiency, correctness, observability, and replaceable providers — not toy/simple stubs when a durable approach exists.
+- Prefer bounded concurrency (worker pools / errgroup + semaphores) for page-level work.
+- Prefer real parsers/libraries for PDF detect/extract when available (CPU-only, ARM64 + x86_64).
+- Keep stages idempotent: reuse existing stage artifacts before rerunning expensive work.
+- Providers stay isolated and must not write job/DB state; orchestrator owns workflow transitions.
+- Exporters consume CDOM only.
+- Add/update tests for new behavior, including failure and cancel paths.
+- Do not sacrifice API/CDOM/domain contract stability for speed.

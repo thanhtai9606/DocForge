@@ -13,7 +13,7 @@ docforge-architecture:
 - Domain must not import infrastructure.
 - Keep HTTP handlers thin; put use cases in application services.
 - Use dependency injection and small interfaces.
-- Prefer simple implementations over speculative abstractions.
+- Prefer production-efficient, correct implementations over speculative abstractions or toy shortcuts. Use bounded concurrency and real parsers when they improve reliability.
 - CPU-only; do not require NVIDIA GPU.
 - Preserve ARM64 and x86_64 compatibility.
 - Keep Python isolated to AI/OCR worker responsibilities unless a native Go path is deliberately chosen.

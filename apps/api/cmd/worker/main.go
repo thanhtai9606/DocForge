@@ -46,6 +46,8 @@ func main() {
 		Objects:   objects,
 		Progress:  progress,
 		OCR:       stubocr.New(),
+		Layout:    nil, // geometric default inside engine
+		Exporters: nil, // json+markdown defaults
 	}
 
 	logger.Info("worker listening", "queue", cfg.RabbitQueue)
@@ -61,7 +63,7 @@ func main() {
 			log.Error("job failed retryable", "error", runErr)
 			return runErr
 		}
-		log.Info("job completed", "kind", res.Kind, "cdom_key", res.CDOMKey, "artifact_id", res.ArtifactID)
+		log.Info("job completed", "kind", res.Kind, "cdom_key", res.CDOMKey, "artifacts", len(res.ArtifactIDs))
 		return nil
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
