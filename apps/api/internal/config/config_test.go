@@ -12,12 +12,12 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("RABBITMQ_URL", "")
-	t.Setenv("S3_ENDPOINT", "")
-	t.Setenv("S3_REGION", "")
-	t.Setenv("S3_BUCKET", "")
-	t.Setenv("S3_ACCESS_KEY", "")
-	t.Setenv("S3_SECRET_KEY", "")
-	t.Setenv("S3_USE_PATH_STYLE", "")
+	t.Setenv("MINIO_ENDPOINT", "")
+	t.Setenv("MINIO_REGION", "")
+	t.Setenv("MINIO_BUCKET", "")
+	t.Setenv("MINIO_ACCESS_KEY", "")
+	t.Setenv("MINIO_SECRET_KEY", "")
+	t.Setenv("MINIO_USE_PATH_STYLE", "")
 	t.Setenv("MAX_UPLOAD_BYTES", "")
 	t.Setenv("MAX_PAGES", "")
 	t.Setenv("SHUTDOWN_TIMEOUT", "")
@@ -30,10 +30,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" {
 		t.Fatalf("HTTPAddr=%q", cfg.HTTPAddr)
 	}
-	if cfg.S3Bucket != "docforge" {
-		t.Fatalf("S3Bucket=%q", cfg.S3Bucket)
+	if cfg.MinIOBucket != "docforge" {
+		t.Fatalf("MinIOBucket=%q", cfg.MinIOBucket)
 	}
-	if !cfg.S3UsePathStyle {
+	if !cfg.MinIOUsePathStyle {
 		t.Fatal("expected path style true")
 	}
 	if cfg.MaxUploadBytes != 50<<20 {
@@ -52,8 +52,8 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("HTTP_ADDR", ":9090")
-	t.Setenv("S3_BUCKET", "docs")
-	t.Setenv("S3_USE_PATH_STYLE", "false")
+	t.Setenv("MINIO_BUCKET", "docs")
+	t.Setenv("MINIO_USE_PATH_STYLE", "false")
 	t.Setenv("MAX_UPLOAD_BYTES", "1024")
 	t.Setenv("MAX_PAGES", "7")
 	t.Setenv("SHUTDOWN_TIMEOUT", "3s")
@@ -66,10 +66,10 @@ func TestLoadFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.HTTPAddr != ":9090" || cfg.S3Bucket != "docs" {
+	if cfg.HTTPAddr != ":9090" || cfg.MinIOBucket != "docs" {
 		t.Fatalf("unexpected cfg: %+v", cfg)
 	}
-	if cfg.S3UsePathStyle {
+	if cfg.MinIOUsePathStyle {
 		t.Fatal("expected path style false")
 	}
 	if cfg.MaxUploadBytes != 1024 || cfg.MaxPages != 7 {
