@@ -12,6 +12,8 @@ import (
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/api"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/application"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/auth"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/cleanup"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/config"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/memory"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/postgres"
@@ -20,6 +22,7 @@ import (
 	miniostore "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/minio"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/jobs"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/metrics"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
 )
 
@@ -31,28 +34,58 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
-	docs, jobRepo, artifacts, objects, queue, progress, cleanup, err := wireDeps(ctx, cfg, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	docs, jobRepo, artifacts, objects, queue, progress, cleanupFn, err := wireDeps(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("dependency wiring failed", "error", err)
 		os.Exit(1)
 	}
-	defer cleanup()
+	defer cleanupFn()
 
+	reg := metrics.New()
 	svc := &application.Service{
+		Documents:   docs,
+		Jobs:        jobRepo,
+		Artifacts:   artifacts,
+		Objects:     objects,
+		Queue:       queue,
+		Progress:    progress,
+		MaxBytes:    cfg.MaxUploadBytes,
+		MaxPages:    cfg.MaxPages,
+		MaxAttempts: cfg.MaxAttempts,
+	}
+
+	sweeper := &cleanup.Sweeper{
 		Documents: docs,
 		Jobs:      jobRepo,
 		Artifacts: artifacts,
 		Objects:   objects,
-		Queue:     queue,
-		Progress:  progress,
-		MaxBytes:  cfg.MaxUploadBytes,
-		MaxPages:  cfg.MaxPages,
+		TTL:       cfg.ArtifactTTL,
+		Logger:    logger,
 	}
+	sweeper.Start(ctx, cfg.CleanupInterval)
+
+	handler := api.NewServer(svc, api.Options{
+		Auth: auth.New(
+			cfg.AuthSecret,
+			cfg.DevAuthDisabled,
+			cfg.WebOrigin,
+			cfg.APIPublicOrigin,
+			auth.ProviderConfig{ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret},
+			auth.ProviderConfig{ClientID: cfg.MicrosoftClientID, ClientSecret: cfg.MicrosoftClientSecret, Tenant: cfg.MicrosoftTenant},
+		),
+		Metrics:        reg,
+		CORSOrigins:    cfg.CORSOrigins,
+		RequestTimeout: cfg.RequestTimeout,
+		RatePerMinute:  cfg.RatePerMinute,
+		RateBurst:      cfg.RateBurst,
+	})
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewServer(svc),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -67,9 +100,10 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	cancel()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
 }
 
@@ -85,10 +119,10 @@ func wireDeps(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 ) {
 	useMemory := os.Getenv("DOCFORGE_USE_MEMORY") == "1"
 
-	cleanup := func() {}
+	cleanupFn := func() {}
 	if useMemory {
 		logger.Warn("running with in-memory adapters (DOCFORGE_USE_MEMORY=1)")
-		return memory.NewDocumentRepo(), memory.NewJobRepo(), memory.NewArtifactRepo(), memory.NewObjectStore(), memory.NewQueue(), memory.NewProgress(), cleanup, nil
+		return memory.NewDocumentRepo(), memory.NewJobRepo(), memory.NewArtifactRepo(), memory.NewObjectStore(), memory.NewQueue(), memory.NewProgress(), cleanupFn, nil
 	}
 
 	db, err := postgres.Open(cfg.DatabaseURL)
@@ -120,11 +154,11 @@ func wireDeps(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		logger.Warn("ensure minio bucket failed; continuing", "error", err)
 	}
 
-	cleanup = func() {
+	cleanupFn = func() {
 		_ = publisher.Close()
 		_ = redisClient.Close()
 		_ = db.Close()
 	}
 
-	return postgres.NewDocumentRepo(store), postgres.NewJobRepo(store), postgres.NewArtifactRepo(store), objectStore, publisher, progress, cleanup, nil
+	return postgres.NewDocumentRepo(store), postgres.NewJobRepo(store), postgres.NewArtifactRepo(store), objectStore, publisher, progress, cleanupFn, nil
 }

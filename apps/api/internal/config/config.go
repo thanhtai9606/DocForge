@@ -10,23 +10,38 @@ import (
 
 // Config holds runtime configuration for the API process.
 type Config struct {
-	HTTPAddr           string
-	DatabaseURL        string
-	RedisURL           string
-	RabbitURL          string
-	MinIOEndpoint      string
-	MinIORegion        string
-	MinIOBucket        string
-	MinIOAccessKey     string
-	MinIOSecretKey     string
-	MinIOUsePathStyle  bool
-	MaxUploadBytes     int64
-	MaxPages           int
-	ShutdownTimeout    time.Duration
-	RabbitExchange     string
-	RabbitQueue        string
-	RabbitRoutingKey   string
-	DevAuthDisabled    bool
+	HTTPAddr          string
+	DatabaseURL       string
+	RedisURL          string
+	RabbitURL         string
+	MinIOEndpoint     string
+	MinIORegion       string
+	MinIOBucket       string
+	MinIOAccessKey    string
+	MinIOSecretKey    string
+	MinIOUsePathStyle bool
+	MaxUploadBytes    int64
+	MaxPages          int
+	MaxAttempts       int
+	ShutdownTimeout   time.Duration
+	RequestTimeout    time.Duration
+	RabbitExchange    string
+	RabbitQueue       string
+	RabbitRoutingKey  string
+	DevAuthDisabled   bool
+	AuthSecret        string
+	WebOrigin         string
+	APIPublicOrigin   string
+	GoogleClientID    string
+	GoogleClientSecret string
+	MicrosoftClientID string
+	MicrosoftClientSecret string
+	MicrosoftTenant   string
+	CORSOrigins       []string
+	RatePerMinute     int
+	RateBurst         int
+	ArtifactTTL       time.Duration
+	CleanupInterval   time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -44,16 +59,43 @@ func Load() (Config, error) {
 		MinIOUsePathStyle: getenvBool("MINIO_USE_PATH_STYLE", true),
 		MaxUploadBytes:    getenvInt64("MAX_UPLOAD_BYTES", 50<<20),
 		MaxPages:          getenvInt("MAX_PAGES", 100),
+		MaxAttempts:       getenvInt("MAX_ATTEMPTS", 3),
 		ShutdownTimeout:   getenvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		RequestTimeout:    getenvDuration("REQUEST_TIMEOUT", 60*time.Second),
 		RabbitExchange:    getenv("RABBITMQ_EXCHANGE", "docforge.jobs"),
 		RabbitQueue:       getenv("RABBITMQ_QUEUE", "docforge.jobs.process"),
 		RabbitRoutingKey:  getenv("RABBITMQ_ROUTING_KEY", "process"),
-		DevAuthDisabled:   getenvBool("DEV_AUTH_DISABLED", true),
+		DevAuthDisabled:   getenvBool("AUTH_BYPASS", getenvBool("DEV_AUTH_DISABLED", true)),
+		AuthSecret:        getenv("AUTH_SECRET", "docforge-dev-secret-change-me"),
+		WebOrigin:         getenv("WEB_ORIGIN", "http://localhost:5173"),
+		APIPublicOrigin:   getenv("API_PUBLIC_ORIGIN", "http://localhost:8080"),
+		GoogleClientID:    getenv("GOOGLE_OAUTH_CLIENT_ID", ""),
+		GoogleClientSecret: getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+		MicrosoftClientID: getenv("MICROSOFT_OAUTH_CLIENT_ID", ""),
+		MicrosoftClientSecret: getenv("MICROSOFT_OAUTH_CLIENT_SECRET", ""),
+		MicrosoftTenant:   getenv("MICROSOFT_OAUTH_TENANT", "common"),
+		CORSOrigins:       splitCSV(getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
+		RatePerMinute:     getenvInt("RATE_LIMIT_PER_MINUTE", 180),
+		RateBurst:         getenvInt("RATE_LIMIT_BURST", 40),
+		ArtifactTTL:       getenvDuration("ARTIFACT_TTL", 168*time.Hour),
+		CleanupInterval:   getenvDuration("CLEANUP_INTERVAL", time.Hour),
 	}
 	if cfg.MinIOBucket == "" {
 		return Config{}, fmt.Errorf("MINIO_BUCKET is required")
 	}
 	return cfg, nil
+}
+
+func splitCSV(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

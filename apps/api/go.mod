@@ -15,7 +15,11 @@ require (
 	rsc.io/pdf v0.1.1
 )
 
-require github.com/gomutex/godocx v0.1.5 // indirect
+require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
+	github.com/gomutex/godocx v0.1.5 // indirect
+	golang.org/x/oauth2 v0.25.0 // indirect
+)
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.7 // indirect

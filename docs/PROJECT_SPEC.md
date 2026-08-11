@@ -471,7 +471,8 @@ Screens:
 - Settings
 
 ### Login
-Components: LoginPage, LoginForm, EmailInput, PasswordInput, SubmitButton, ErrorMessage.
+SSO via Google and Microsoft (Entra ID). No local password auth.
+Components: LoginPage, SSO provider buttons, AuthCallbackPage.
 
 ### Dashboard
 Show recent documents, processing jobs, completed jobs, failed jobs, and upload action.

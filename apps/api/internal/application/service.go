@@ -16,16 +16,17 @@ import (
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
 )
 
-// Service implements Phase 1 document/job use cases.
+// Service implements document/job use cases.
 type Service struct {
-	Documents  jobs.DocumentRepository
-	Jobs       jobs.JobRepository
-	Artifacts  jobs.ArtifactRepository
-	Objects    storage.ObjectStore
-	Queue      jobs.QueuePublisher
-	Progress   jobs.ProgressStore
-	MaxBytes   int64
-	MaxPages   int
+	Documents   jobs.DocumentRepository
+	Jobs        jobs.JobRepository
+	Artifacts   jobs.ArtifactRepository
+	Objects     storage.ObjectStore
+	Queue       jobs.QueuePublisher
+	Progress    jobs.ProgressStore
+	MaxBytes    int64
+	MaxPages    int
+	MaxAttempts int
 }
 
 type UploadInput struct {
@@ -40,6 +41,13 @@ type UploadResult struct {
 	DocumentID string
 	JobID      string
 	Status     domain.JobStatus
+}
+
+func (s *Service) maxAttempts() int {
+	if s.MaxAttempts < 1 {
+		return 3
+	}
+	return s.MaxAttempts
 }
 
 func (s *Service) UploadDocument(ctx context.Context, in UploadInput) (*UploadResult, error) {
@@ -127,6 +135,13 @@ func (s *Service) UploadDocument(ctx context.Context, in UploadInput) (*UploadRe
 	return &UploadResult{DocumentID: docID, JobID: jobID, Status: domain.JobQueued}, nil
 }
 
+func (s *Service) ListDocuments(ctx context.Context, limit int) ([]domain.Document, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.Documents.ListRecent(ctx, limit)
+}
+
 func (s *Service) GetJob(ctx context.Context, jobID string) (*domain.Job, error) {
 	job, err := s.Jobs.Get(ctx, jobID)
 	if err != nil {
@@ -141,8 +156,37 @@ func (s *Service) GetJob(ctx context.Context, jobID string) (*domain.Job, error)
 	return job, nil
 }
 
+func (s *Service) LatestJobForDocument(ctx context.Context, documentID string) (*domain.Job, error) {
+	if _, err := s.Documents.Get(ctx, documentID); err != nil {
+		return nil, err
+	}
+	job, err := s.Jobs.LatestByDocument(ctx, documentID)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetJob(ctx, job.ID)
+}
+
 func (s *Service) GetDocument(ctx context.Context, documentID string) (*domain.Document, error) {
 	return s.Documents.Get(ctx, documentID)
+}
+
+func (s *Service) DeleteDocument(ctx context.Context, documentID string) error {
+	doc, err := s.Documents.Get(ctx, documentID)
+	if err != nil {
+		return err
+	}
+	arts, err := s.Artifacts.ListByDocument(ctx, documentID)
+	if err != nil {
+		return err
+	}
+	for _, a := range arts {
+		_ = s.Objects.Delete(ctx, a.StorageKey)
+	}
+	_ = s.Artifacts.DeleteByDocument(ctx, documentID)
+	_ = s.Jobs.DeleteByDocument(ctx, documentID)
+	_ = s.Objects.Delete(ctx, doc.StorageKey)
+	return s.Documents.Delete(ctx, documentID)
 }
 
 func (s *Service) ListArtifacts(ctx context.Context, documentID string) ([]domain.Artifact, error) {
@@ -166,6 +210,18 @@ func (s *Service) OpenArtifact(ctx context.Context, artifactID string) (*domain.
 		return nil, nil, err
 	}
 	return artifact, rc, nil
+}
+
+func (s *Service) OpenOriginal(ctx context.Context, documentID string) (*domain.Document, io.ReadCloser, error) {
+	doc, err := s.Documents.Get(ctx, documentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rc, err := s.Objects.Get(ctx, doc.StorageKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return doc, rc, nil
 }
 
 func (s *Service) CancelJob(ctx context.Context, jobID string) (*domain.Job, error) {
@@ -193,6 +249,52 @@ func (s *Service) CancelJob(ctx context.Context, jobID string) (*domain.Job, err
 	}
 	if s.Progress != nil {
 		_ = s.Progress.SetProgress(ctx, job.ID, job.Stage, job.Progress)
+	}
+	return job, nil
+}
+
+func (s *Service) RetryJob(ctx context.Context, jobID string) (*domain.Job, error) {
+	old, err := s.Jobs.Get(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if old.Status != domain.JobFailed && old.Status != domain.JobCancelled {
+		return nil, domain.NewAppError(domain.CodeInternal, "only failed or cancelled jobs can be retried", false)
+	}
+	if old.Attempts+1 >= s.maxAttempts() {
+		return nil, domain.NewAppError(domain.CodeInternal, "max retry attempts exceeded", false)
+	}
+	doc, err := s.Documents.Get(ctx, old.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	job := &domain.Job{
+		ID:         uuid.NewString(),
+		DocumentID: old.DocumentID,
+		Status:     domain.JobQueued,
+		Stage:      "queued",
+		Progress:   0,
+		Attempts:   old.Attempts + 1,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.Jobs.Create(ctx, job); err != nil {
+		return nil, err
+	}
+	doc.Status = domain.DocumentQueued
+	doc.UpdatedAt = now
+	_ = s.Documents.Update(ctx, doc)
+	if s.Progress != nil {
+		_ = s.Progress.SetProgress(ctx, job.ID, job.Stage, job.Progress)
+	}
+	if err := s.Queue.PublishProcessJob(ctx, job.ID, job.DocumentID); err != nil {
+		job.Status = domain.JobFailed
+		job.ErrorCode = domain.CodeInternal
+		job.ErrorMsg = fmt.Sprintf("failed to enqueue retry: %v", err)
+		job.UpdatedAt = time.Now().UTC()
+		_ = s.Jobs.Update(ctx, job)
+		return nil, domain.NewAppError(domain.CodeInternal, "failed to enqueue retry job", true)
 	}
 	return job, nil
 }

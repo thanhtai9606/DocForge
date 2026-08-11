@@ -82,6 +82,8 @@ const (
 	CodeJobCancelled          = "JOB_CANCELLED"
 	CodeNotFound              = "NOT_FOUND"
 	CodeInternal              = "INTERNAL_ERROR"
+	CodeUnauthorized          = "UNAUTHORIZED"
+	CodeRateLimited           = "RATE_LIMITED"
 )
 
 // AppError is a domain error with API mapping metadata.
