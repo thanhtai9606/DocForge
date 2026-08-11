@@ -8,6 +8,7 @@ import (
 	"io"
 	"path"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -388,7 +389,11 @@ func (e *Engine) ocrPage(ctx context.Context, doc *domain.Document, pdf []byte, 
 func (e *Engine) ensureExports(ctx context.Context, job *domain.Job, doc *domain.Document, cdomKey string) ([]string, error) {
 	exporters := e.Exporters
 	if len(exporters) == 0 {
-		exporters = []export.Exporter{export.NewJSON(), export.NewMarkdown()}
+		exporters = []export.Exporter{export.NewJSON(), export.NewMarkdown(), export.NewDOCX()}
+	}
+	exporters = filterExporters(exporters, doc.OutputFormats)
+	if len(exporters) == 0 {
+		return nil, e.fail(ctx, job, doc, domain.CodeExportFailed, "no exporters matched output_formats", false)
 	}
 	rc, err := e.Objects.Get(ctx, cdomKey)
 	if err != nil {
@@ -438,6 +443,23 @@ func extFor(format string) string {
 	default:
 		return format
 	}
+}
+
+func filterExporters(all []export.Exporter, formats []string) []export.Exporter {
+	if len(formats) == 0 {
+		return all
+	}
+	want := make(map[string]struct{}, len(formats))
+	for _, f := range formats {
+		want[strings.ToLower(strings.TrimSpace(f))] = struct{}{}
+	}
+	out := make([]export.Exporter, 0, len(all))
+	for _, ex := range all {
+		if _, ok := want[strings.ToLower(ex.Format())]; ok {
+			out = append(out, ex)
+		}
+	}
+	return out
 }
 
 func (e *Engine) findArtifact(ctx context.Context, documentID, kind, format string) *domain.Artifact {

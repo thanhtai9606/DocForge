@@ -15,6 +15,8 @@ require (
 	rsc.io/pdf v0.1.1
 )
 
+require github.com/gomutex/godocx v0.1.5 // indirect
+
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.7 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.25 // indirect

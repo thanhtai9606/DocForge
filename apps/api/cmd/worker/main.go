@@ -47,7 +47,7 @@ func main() {
 		Progress:  progress,
 		OCR:       stubocr.New(),
 		Layout:    nil, // geometric default inside engine
-		Exporters: nil, // json+markdown defaults
+		Exporters: nil, // json+markdown+docx defaults
 	}
 
 	logger.Info("worker listening", "queue", cfg.RabbitQueue)

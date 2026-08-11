@@ -114,7 +114,13 @@ func writeBlock(b *bytes.Buffer, blk cdom.Block, depth int) {
 		}
 	case cdom.BlockListItem:
 		b.WriteString(strings.Repeat("  ", depth))
-		b.WriteString("- ")
+		marker := "- "
+		if blk.Attributes != nil {
+			if ordered, ok := blk.Attributes["ordered"].(bool); ok && ordered {
+				marker = "1. "
+			}
+		}
+		b.WriteString(marker)
 		b.WriteString(strings.TrimSpace(blk.Text))
 		b.WriteByte('\n')
 	case cdom.BlockTable:
