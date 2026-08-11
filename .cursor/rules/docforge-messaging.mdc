@@ -15,5 +15,5 @@ docforge-messaging:
 - Before re-running a stage, check whether the expected artifact already exists.
 - Retry only transient failures (worker unavailable, timeout, temporary storage/network, redelivery cases).
 - Default retry policy: max_attempts = 3 with exponential backoff.
-- Local/dev compose should include postgres, minio (S3), redis, and rabbitmq.
+- Local/dev compose should include postgres, minio, redis, and rabbitmq.
 - Do not introduce Kafka unless explicitly requested.

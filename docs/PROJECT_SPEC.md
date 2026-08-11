@@ -35,7 +35,7 @@ React Web
 Go API
    |
    +--> PostgreSQL (metadata / job state)
-   +--> S3-compatible storage (binaries / artifacts)
+   +--> MinIO object storage (binaries / artifacts)
    +--> Redis (cache, progress, locks / short-lived state)
    +--> RabbitMQ (job / stage queue)
    v
@@ -76,8 +76,10 @@ Prefer Go. Reads CDOM and exports Markdown, DOCX, JSON.
 ### PostgreSQL
 Metadata and job state. Do not store large PDF binaries here.
 
-### S3-compatible object storage
+### MinIO object storage
 Original PDFs, page images, extracted assets, CDOM JSON, and generated artifacts.
+
+MinIO is the approved object store for MVP (self-hosted). The storage adapter speaks MinIO's S3-compatible API; do not depend on AWS S3 as a required cloud service.
 
 ### Redis
 Approved for MVP. Use for:
@@ -652,7 +654,7 @@ Provider contract must test startup, health, process, timeout, errors, CDOM conv
 - configuration
 - logging
 - PostgreSQL
-- object storage
+- object storage (MinIO)
 - Redis
 - RabbitMQ wiring (connection, declare queues/exchanges)
 - CDOM
@@ -797,4 +799,4 @@ When using Cursor/Claude Code/other coding agents:
 18. Keep Python isolated to AI/OCR responsibilities unless a native Go implementation is deliberately chosen.
 19. Do not add a new external dependency when the standard library or an existing project dependency is sufficient.
 20. Before implementing a major component, verify that it conforms to the CDOM and service boundaries in this document.
-21. PostgreSQL is the durable source of truth for documents/jobs/artifacts; Redis is cache/coordination only; RabbitMQ is the work queue.
+21. PostgreSQL is the durable source of truth for documents/jobs/artifacts; Redis is cache/coordination only; RabbitMQ is the work queue; MinIO is the object store.
