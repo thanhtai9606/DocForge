@@ -4,6 +4,13 @@ Read `docs/PROJECT_SPEC.md` completely before implementing the project.
 Also follow `.cursor/rules/` for always-on project constraints.
 Use CodeGraph for structural discovery (`docs/CODEGRAPH.md`) to avoid token-heavy file crawls.
 
+## Branching
+
+- Open PRs against `develop` first.
+- Promote `develop` → `main` for release.
+- Image publish CI runs only on `main` (see `docs/BRANCHING.md`).
+
+
 ## Messaging decision (approved)
 
 - **RabbitMQ**: job/stage work queue, retries, dead-letter handling.

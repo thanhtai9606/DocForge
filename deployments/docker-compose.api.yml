@@ -11,12 +11,12 @@ services:
       DATABASE_URL: postgres://docforge:docforge@postgres:5432/docforge?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       RABBITMQ_URL: amqp://docforge:docforge@rabbitmq:5672/
-      S3_ENDPOINT: http://minio:9000
-      S3_REGION: us-east-1
-      S3_BUCKET: docforge
-      S3_ACCESS_KEY: docforge
-      S3_SECRET_KEY: docforge_secret
-      S3_USE_PATH_STYLE: "true"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: docforge
+      MINIO_ACCESS_KEY: docforge
+      MINIO_SECRET_KEY: docforge_secret
+      MINIO_USE_PATH_STYLE: "true"
     depends_on:
       - postgres
       - redis

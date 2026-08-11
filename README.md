@@ -8,9 +8,17 @@ PDF Document Intelligence Platform — private-hosted service to upload PDFs, OC
 - `docs/CURSOR_INSTRUCTIONS.md` — coding-agent rules
 - `docs/PHASE1_PLAN.md` — Phase 1 foundation tree and scope
 - `docs/CODEGRAPH.md` — CodeGraph setup (fewer AI discovery tokens)
+- `docs/BRANCHING.md` — `develop` integration / `main` release flow
 - `AGENTS.md` — agent notes including CodeGraph CLI fallback
-- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging, codegraph)
+- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging, codegraph, branching)
 - `.cursor/mcp.json` — CodeGraph MCP server for Cursor
+
+## Branching
+
+- **`develop`** — integration branch; open all feature PRs here first
+- **`main`** — release branch; GitHub Actions image publish runs only here
+
+See `docs/BRANCHING.md`.
 
 ## CodeGraph (AI token optimization)
 
