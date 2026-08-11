@@ -63,3 +63,29 @@ DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
 ```bash
 ./scripts/test.sh
 ```
+
+## Container images (GHCR)
+
+GitHub Actions builds multi-arch (`linux/amd64`, `linux/arm64`) images and pushes to GitHub Container Registry on pushes to `main` and version tags (`v*`).
+
+Image:
+
+```text
+ghcr.io/<owner>/docforge-api:latest
+ghcr.io/<owner>/docforge-api:sha-<commit>
+```
+
+Local build:
+
+```bash
+docker build -f apps/api/Dockerfile -t docforge-api:local .
+```
+
+Run published API with local infra:
+
+```bash
+docker compose -f deployments/docker-compose.yml up -d
+docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml up -d api
+```
+
+Package visibility: ensure the `docforge-api` GHCR package allows the intended audience (private/public) in GitHub Packages settings.
