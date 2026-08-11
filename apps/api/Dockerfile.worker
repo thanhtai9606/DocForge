@@ -1,5 +1,5 @@
 # Build from repository root:
-#   docker build -f apps/api/Dockerfile -t docforge-api .
+#   docker build -f apps/api/Dockerfile.worker -t docforge-worker .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 
@@ -15,10 +15,9 @@ COPY packages/cdom ./packages/cdom
 COPY apps/api ./apps/api
 
 WORKDIR /src/apps/api
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/api /api
+COPY --from=build /out/worker /worker
 USER nonroot:nonroot
-EXPOSE 8080
-ENTRYPOINT ["/api"]
+ENTRYPOINT ["/worker"]
