@@ -799,4 +799,4 @@ When using Cursor/Claude Code/other coding agents:
 18. Keep Python isolated to AI/OCR responsibilities unless a native Go implementation is deliberately chosen.
 19. Do not add a new external dependency when the standard library or an existing project dependency is sufficient.
 20. Before implementing a major component, verify that it conforms to the CDOM and service boundaries in this document.
-21. PostgreSQL is the durable source of truth for documents/jobs/artifacts; Redis is cache/coordination only; RabbitMQ is the work queue.
+21. PostgreSQL is the durable source of truth for documents/jobs/artifacts; Redis is cache/coordination only; RabbitMQ is the work queue; MinIO is the object store.
