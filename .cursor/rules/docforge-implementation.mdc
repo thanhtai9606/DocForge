@@ -5,8 +5,8 @@ alwaysApply: true
 
 docforge-implementation:
 
-- Implementation order: foundation/domain/CDOM → Go API → Postgres/S3/Redis/RabbitMQ wiring → orchestration → AI worker/providers → exporters → React frontend → tests/hardening.
-- Phase 1 focus: scaffold, CDOM package, domain, config/logging, Postgres, object storage, Redis, RabbitMQ declare/publish wiring, REST API skeleton, tests.
+- Implementation order: foundation/domain/CDOM → Go API → Postgres/MinIO/Redis/RabbitMQ wiring → orchestration → AI worker/providers → exporters → React frontend → tests/hardening.
+- Phase 1 focus: scaffold, CDOM package, domain, config/logging, Postgres, MinIO object storage, Redis, RabbitMQ declare/publish wiring, REST API skeleton, tests.
 - Phase 1 does not include full OCR/layout pipeline, exporters, or React screens.
 - Follow `docs/PHASE1_PLAN.md` for the foundation file tree.
 - For every task: map to a PROJECT_SPEC section, make the smallest coherent change, add/update tests, keep interfaces stable, report assumptions/deviations.

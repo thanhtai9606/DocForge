@@ -13,7 +13,7 @@ Also follow `.cursor/rules/` for always-on project constraints.
 Implementation order:
 1. Foundation/domain/CDOM
 2. Go API
-3. Storage (Postgres + S3) + Redis + RabbitMQ wiring
+3. Storage (Postgres + MinIO) + Redis + RabbitMQ wiring
 4. Job orchestration
 5. AI worker/provider contract
 6. Markdown/DOCX exporters

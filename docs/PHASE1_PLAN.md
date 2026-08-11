@@ -17,7 +17,7 @@ project/
 │   │   │   │   ├── postgres/
 │   │   │   │   ├── redis/
 │   │   │   │   ├── rabbitmq/
-│   │   │   │   └── s3/
+│   │   │   │   └── minio/
 │   │   │   ├── storage/
 │   │   │   └── jobs/
 │   │   ├── configs/
@@ -50,7 +50,7 @@ project/
 3. Domain models: Document, Job, Artifact; job states; API error codes.
 4. Config + structured logging (`request_id`).
 5. PostgreSQL migrations + repositories (interfaces; domain does not import infra).
-6. S3-compatible object storage abstraction (MinIO locally).
+6. MinIO object storage abstraction (S3-compatible API client against MinIO).
 7. Redis client wiring for progress/cache helpers.
 8. RabbitMQ connection + declare exchanges/queues (publish path for queued jobs).
 9. REST API skeleton under `/api/v1`:

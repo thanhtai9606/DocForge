@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-// ObjectStore abstracts S3-compatible object storage.
+// ObjectStore abstracts MinIO object storage.
 type ObjectStore interface {
 	Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
