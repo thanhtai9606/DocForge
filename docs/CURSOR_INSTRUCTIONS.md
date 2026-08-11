@@ -2,6 +2,7 @@
 
 Read `docs/PROJECT_SPEC.md` completely before implementing the project.
 Also follow `.cursor/rules/` for always-on project constraints.
+Use CodeGraph for structural discovery (`docs/CODEGRAPH.md`) to avoid token-heavy file crawls.
 
 ## Messaging decision (approved)
 

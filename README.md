@@ -7,7 +7,21 @@ PDF Document Intelligence Platform — private-hosted service to upload PDFs, OC
 - `docs/PROJECT_SPEC.md` — architecture and technical specification (v1.1)
 - `docs/CURSOR_INSTRUCTIONS.md` — coding-agent rules
 - `docs/PHASE1_PLAN.md` — Phase 1 foundation tree and scope
-- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging)
+- `docs/CODEGRAPH.md` — CodeGraph setup (fewer AI discovery tokens)
+- `AGENTS.md` — agent notes including CodeGraph CLI fallback
+- `.cursor/rules/` — always-on Cursor rules (architecture, CDOM, implementation, messaging, codegraph)
+- `.cursor/mcp.json` — CodeGraph MCP server for Cursor
+
+## CodeGraph (AI token optimization)
+
+Index once per clone, then agents query the graph instead of crawling files:
+
+```bash
+./scripts/codegraph-init.sh
+# or: npx -y @colbymchenry/codegraph init
+```
+
+Restart Cursor after clone so MCP loads. See `docs/CODEGRAPH.md`.
 
 ## Messaging (MVP)
 
