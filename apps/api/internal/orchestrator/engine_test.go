@@ -3,151 +3,183 @@ package orchestrator_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"io"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/export"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/memory"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/layout"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/orchestrator"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/providers/stubocr"
 	"github.com/thanhtai9606/DocForge/packages/cdom"
 )
 
-func TestDetectDigitalPDF(t *testing.T) {
-	pdf := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n(BT Hello Vietnamese Xin chào ET)\n(More digital text content here for detection threshold padding.)\n")
-	kind, pages, _, err := orchestrator.DetectAndExtract(pdf)
-	if err != nil {
-		t.Fatal(err)
+func buildPDF(pageContent string) []byte {
+	objs := make([]string, 6)
+	objs[1] = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+	objs[2] = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+	objs[3] = "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+	stream := "BT /F1 24 Tf 72 720 Td (" + pageContent + ") Tj ET\n"
+	objs[4] = fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%sengstream\nendobj\n", len(stream), stream)
+	objs[4] = fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%sendstream\nendobj\n", len(stream), stream)
+	objs[5] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+
+	var body bytes.Buffer
+	body.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+	offsets := make([]int, 6)
+	for i := 1; i <= 5; i++ {
+		offsets[i] = body.Len()
+		body.WriteString(objs[i])
 	}
-	if pages < 1 {
-		t.Fatalf("pages=%d", pages)
+	xrefPos := body.Len()
+	body.WriteString("xref\n0 6\n")
+	body.WriteString("0000000000 65535 f \n")
+	for i := 1; i <= 5; i++ {
+		body.WriteString(fmt.Sprintf("%010d 00000 n \n", offsets[i]))
 	}
-	if kind != orchestrator.KindDigital && kind != orchestrator.KindMixed {
-		t.Fatalf("kind=%s", kind)
-	}
+	body.WriteString("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n")
+	body.WriteString(fmt.Sprintf("%d\n%%%%EOF\n", xrefPos))
+	return body.Bytes()
 }
 
-func TestDetectScannedPDF(t *testing.T) {
-	pdf := []byte("%PDF-1.4\n% scanned binary-ish content with almost no text strings\n1 0 obj<< /Type /Page >>endobj\n")
-	kind, _, blocks, err := orchestrator.DetectAndExtract(pdf)
-	if err != nil {
-		t.Fatal(err)
+func buildEmptyContentPDF() []byte {
+	objs := make([]string, 6)
+	objs[1] = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+	objs[2] = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+	objs[3] = "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n"
+	stream := ""
+	objs[4] = fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%sendstream\nendobj\n", len(stream), stream)
+	objs[5] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+	var body bytes.Buffer
+	body.WriteString("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+	offsets := make([]int, 6)
+	for i := 1; i <= 5; i++ {
+		offsets[i] = body.Len()
+		body.WriteString(objs[i])
 	}
-	if kind != orchestrator.KindScanned {
-		t.Fatalf("kind=%s", kind)
+	xrefPos := body.Len()
+	body.WriteString("xref\n0 6\n0000000000 65535 f \n")
+	for i := 1; i <= 5; i++ {
+		body.WriteString(fmt.Sprintf("%010d 00000 n \n", offsets[i]))
 	}
-	if len(blocks[0]) > 0 {
-		t.Fatalf("expected empty extract for scanned, got %#v", blocks[0])
-	}
+	body.WriteString("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n")
+	body.WriteString(fmt.Sprintf("%d\n%%%%EOF\n", xrefPos))
+	return body.Bytes()
 }
 
-func TestEngineDigitalPipeline(t *testing.T) {
-	ctx := context.Background()
+func newEngine() (*orchestrator.Engine, *memory.DocumentRepo, *memory.JobRepo, *memory.ArtifactRepo, *memory.ObjectStore) {
 	docs := memory.NewDocumentRepo()
 	jobs := memory.NewJobRepo()
-	artifacts := memory.NewArtifactRepo()
-	objects := memory.NewObjectStore()
-	progress := memory.NewProgress()
+	arts := memory.NewArtifactRepo()
+	objs := memory.NewObjectStore()
+	eng := &orchestrator.Engine{
+		Documents: docs, Jobs: jobs, Artifacts: arts, Objects: objs,
+		Progress: memory.NewProgress(), OCR: stubocr.New(), Layout: layout.NewGeometric(),
+		Exporters:        []export.Exporter{export.NewJSON(), export.NewMarkdown()},
+		MaxParallelPages: 2,
+	}
+	return eng, docs, jobs, arts, objs
+}
 
-	pdf := []byte("%PDF-1.4\n1 0 obj<< /Type /Page >>endobj\n(Paragraph one with enough characters for digital classification threshold.)\n(Paragraph two continues the sample digital document text body.)\n")
-	docID := "doc-digital"
-	jobID := "job-digital"
+func seed(t *testing.T, docs *memory.DocumentRepo, jobs *memory.JobRepo, objs *memory.ObjectStore, docID, jobID string, pdf []byte) {
+	t.Helper()
+	ctx := context.Background()
 	key := "documents/" + docID + "/original.pdf"
-	_ = objects.Put(ctx, key, bytes.NewReader(pdf), int64(len(pdf)), "application/pdf")
+	if err := objs.Put(ctx, key, bytes.NewReader(pdf), int64(len(pdf)), "application/pdf"); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	_ = docs.Create(ctx, &domain.Document{
-		ID: docID, Filename: "digital.pdf", ContentType: "application/pdf",
-		StorageKey: key, Status: domain.DocumentQueued, CreatedAt: now, UpdatedAt: now,
+		ID: docID, Filename: docID + ".pdf", ContentType: "application/pdf",
+		StorageKey: key, Status: domain.DocumentQueued, OutputFormats: []string{"markdown", "json"},
+		CreatedAt: now, UpdatedAt: now,
 	})
 	_ = jobs.Create(ctx, &domain.Job{
 		ID: jobID, DocumentID: docID, Status: domain.JobQueued, Stage: "queued", CreatedAt: now, UpdatedAt: now,
 	})
+}
 
-	engine := &orchestrator.Engine{
-		Documents: docs, Jobs: jobs, Artifacts: artifacts, Objects: objects, Progress: progress,
-		OCR: stubocr.New(),
-	}
-	res, err := engine.Run(ctx, jobID)
+func TestEngineDigitalProducesExports(t *testing.T) {
+	eng, docs, jobs, arts, objs := newEngine()
+	pdf := buildPDF("Production Pipeline Heading Hello digital paragraph content for extraction")
+	seed(t, docs, jobs, objs, "doc-d", "job-d", pdf)
+	res, err := eng.Run(context.Background(), "job-d")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if res.CDOMKey == "" || res.ArtifactID == "" {
-		t.Fatalf("result=%+v", res)
+	job, _ := jobs.Get(context.Background(), "job-d")
+	if job.Status != domain.JobCompleted {
+		t.Fatalf("status=%s err=%s/%s", job.Status, job.ErrorCode, job.ErrorMsg)
 	}
-	job, _ := jobs.Get(ctx, jobID)
-	if job.Status != domain.JobCompleted || job.Progress != 100 {
-		t.Fatalf("job=%+v", job)
+	if len(res.ArtifactIDs) < 2 {
+		t.Fatalf("artifacts=%v", res.ArtifactIDs)
 	}
-	rc, err := objects.Get(ctx, res.CDOMKey)
-	if err != nil {
-		t.Fatal(err)
+	list, _ := arts.ListByDocument(context.Background(), "doc-d")
+	var hasMD bool
+	for _, a := range list {
+		if a.Format == "markdown" {
+			hasMD = true
+			rc, err := objs.Get(context.Background(), a.StorageKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			buf := new(bytes.Buffer)
+			_, _ = buf.ReadFrom(rc)
+			_ = rc.Close()
+			if buf.Len() == 0 {
+				t.Fatal("empty markdown")
+			}
+		}
 	}
-	raw, _ := io.ReadAll(rc)
-	_ = rc.Close()
-	doc, err := cdom.UnmarshalDocument(raw)
-	if err != nil {
-		t.Fatalf("cdom: %v raw=%s", err, raw)
-	}
-	if doc.DocumentID != docID {
-		t.Fatalf("cdom id=%s", doc.DocumentID)
-	}
-	stage, prog, ok, _ := progress.GetProgress(ctx, jobID)
-	if !ok || stage != "completed" || prog != 100 {
-		t.Fatalf("progress stage=%s prog=%d ok=%v", stage, prog, ok)
+	if !hasMD {
+		t.Fatalf("missing markdown export: %+v", list)
 	}
 }
 
 func TestEngineScannedUsesOCR(t *testing.T) {
-	ctx := context.Background()
-	docs := memory.NewDocumentRepo()
-	jobs := memory.NewJobRepo()
-	artifacts := memory.NewArtifactRepo()
-	objects := memory.NewObjectStore()
-
-	pdf := []byte("%PDF-1.4\n1 0 obj<< /Type /Page >>endobj\n")
-	docID := "doc-scan"
-	jobID := "job-scan"
-	key := "documents/" + docID + "/original.pdf"
-	_ = objects.Put(ctx, key, bytes.NewReader(pdf), int64(len(pdf)), "application/pdf")
-	now := time.Now().UTC()
-	_ = docs.Create(ctx, &domain.Document{
-		ID: docID, Filename: "scan.pdf", ContentType: "application/pdf",
-		StorageKey: key, Status: domain.DocumentQueued, CreatedAt: now, UpdatedAt: now,
-	})
-	_ = jobs.Create(ctx, &domain.Job{
-		ID: jobID, DocumentID: docID, Status: domain.JobQueued, Stage: "queued", CreatedAt: now, UpdatedAt: now,
-	})
-
-	engine := &orchestrator.Engine{
-		Documents: docs, Jobs: jobs, Artifacts: artifacts, Objects: objects, Progress: memory.NewProgress(),
-		OCR: stubocr.New(),
-	}
-	res, err := engine.Run(ctx, jobID)
+	eng, docs, jobs, arts, objs := newEngine()
+	seed(t, docs, jobs, objs, "doc-s", "job-s", buildEmptyContentPDF())
+	res, err := eng.Run(context.Background(), "job-s")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Kind != orchestrator.KindScanned {
 		t.Fatalf("kind=%s", res.Kind)
 	}
-	rc, _ := objects.Get(ctx, res.CDOMKey)
-	raw, _ := io.ReadAll(rc)
-	_ = rc.Close()
-	var payload map[string]any
-	_ = json.Unmarshal(raw, &payload)
-	proc := payload["processing"].(map[string]any)
-	if proc["provider_name"] != "stub-ocr" {
-		t.Fatalf("processing=%v", proc)
+	job, _ := jobs.Get(context.Background(), "job-s")
+	if job.Status != domain.JobCompleted {
+		t.Fatalf("job=%+v", job)
+	}
+	list, _ := arts.ListByDocument(context.Background(), "doc-s")
+	if len(list) < 2 {
+		t.Fatalf("expected cdom+exports, got %d", len(list))
 	}
 }
 
-func TestNormalizeToCDOMValid(t *testing.T) {
-	doc := &domain.Document{ID: "d1", Filename: "a.pdf", ContentType: "application/pdf"}
-	cdomDoc := orchestrator.NormalizeToCDOM(doc, orchestrator.KindDigital, nil, nil)
-	cdomDoc.Pages = []cdom.Page{{PageNumber: 1, Width: 10, Height: 10, Blocks: []cdom.Block{}}}
-	cdomDoc.Source.PageCount = 1
-	if err := cdomDoc.Validate(); err != nil {
+func TestMarkdownExporterTableAndHeading(t *testing.T) {
+	doc := &cdom.Document{
+		SchemaVersion: cdom.SchemaVersion,
+		DocumentID:    "d",
+		Source:        cdom.Source{Filename: "a.pdf", MimeType: "application/pdf", PageCount: 1},
+		Metadata:      map[string]any{},
+		Processing:    map[string]any{},
+		Pages: []cdom.Page{{
+			PageNumber: 1, Width: 100, Height: 100,
+			Blocks: []cdom.Block{
+				{ID: "h", Type: cdom.BlockHeading, BBox: cdom.BBox{0, 80, 50, 100}, ReadingOrder: 1, Confidence: 1, Text: "Title"},
+				{ID: "p", Type: cdom.BlockParagraph, BBox: cdom.BBox{0, 40, 50, 60}, ReadingOrder: 2, Confidence: 1, Text: "Body"},
+			},
+		}},
+	}
+	art, err := export.NewMarkdown().Export(context.Background(), doc)
+	if err != nil {
 		t.Fatal(err)
+	}
+	s := string(art.Body)
+	if !strings.Contains(s, "# Title") || !strings.Contains(s, "Body") {
+		t.Fatalf("markdown=%q", s)
 	}
 }

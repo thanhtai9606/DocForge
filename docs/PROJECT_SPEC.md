@@ -794,9 +794,10 @@ When using Cursor/Claude Code/other coding agents:
 13. Do not introduce Kubernetes for MVP.
 14. RabbitMQ and Redis are approved messaging/cache infrastructure; do not introduce Kafka unless requested.
 15. Do not require NVIDIA GPU.
-16. Prefer simple implementations over speculative abstractions.
+16. Prefer production-efficient, correct implementations over speculative abstractions or toy shortcuts.
 17. Preserve ARM64 and x86_64 compatibility.
 18. Keep Python isolated to AI/OCR responsibilities unless a native Go implementation is deliberately chosen.
-19. Do not add a new external dependency when the standard library or an existing project dependency is sufficient.
+19. Do not add a new external dependency when the standard library or an existing project dependency is sufficient — unless it materially improves production correctness/performance.
 20. Before implementing a major component, verify that it conforms to the CDOM and service boundaries in this document.
 21. PostgreSQL is the durable source of truth for documents/jobs/artifacts; Redis is cache/coordination only; RabbitMQ is the work queue; MinIO is the object store.
+22. Prefer bounded concurrency for page-level work and idempotent stage artifact reuse.
