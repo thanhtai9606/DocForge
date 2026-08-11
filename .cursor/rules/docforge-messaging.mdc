@@ -1,0 +1,19 @@
+---
+description: DocForge RabbitMQ and Redis messaging/cache conventions
+alwaysApply: true
+---
+
+docforge-messaging:
+
+- RabbitMQ is the MVP work queue for jobs and processing stages.
+- Redis is the MVP cache/coordination layer for progress and short-lived helpers.
+- PostgreSQL remains the durable source of truth; never make Redis authoritative for job completion/failure.
+- After successful upload + durable job creation, publish work to RabbitMQ.
+- Workers consume RabbitMQ messages and report through the orchestrator contract; they must not own business workflow or write platform state ad hoc.
+- Use dead-letter queues for exhausted retries; persist terminal failures in PostgreSQL.
+- Stage identity for idempotency: `job_id + document_id + stage + attempt`.
+- Before re-running a stage, check whether the expected artifact already exists.
+- Retry only transient failures (worker unavailable, timeout, temporary storage/network, redelivery cases).
+- Default retry policy: max_attempts = 3 with exponential backoff.
+- Local/dev compose should include postgres, minio (S3), redis, and rabbitmq.
+- Do not introduce Kafka unless explicitly requested.

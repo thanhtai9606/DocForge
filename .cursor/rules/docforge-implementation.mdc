@@ -1,0 +1,19 @@
+---
+description: DocForge implementation order, Phase 1 scope, and coding workflow
+alwaysApply: true
+---
+
+docforge-implementation:
+
+- Implementation order: foundation/domain/CDOM → Go API → Postgres/S3/Redis/RabbitMQ wiring → orchestration → AI worker/providers → exporters → React frontend → tests/hardening.
+- Phase 1 focus: scaffold, CDOM package, domain, config/logging, Postgres, object storage, Redis, RabbitMQ declare/publish wiring, REST API skeleton, tests.
+- Phase 1 does not include full OCR/layout pipeline, exporters, or React screens.
+- Follow `docs/PHASE1_PLAN.md` for the foundation file tree.
+- For every task: map to a PROJECT_SPEC section, make the smallest coherent change, add/update tests, keep interfaces stable, report assumptions/deviations.
+- REST base path is `/api/v1` with endpoints for documents, jobs, artifacts, download, cancel.
+- Job states: queued, processing, completed, failed, cancelled.
+- Use conventional commits (feat, fix, chore, docs, refactor, test).
+- Do not hard-code configuration; use env/config files.
+- Do not add a new external dependency when stdlib or an existing dependency is enough.
+- Frontend (when started): React + TypeScript + Vite + React Router + TanStack Query; API calls only through a shared client layer; no micro-frontends.
+- Never render unsanitized HTML from Markdown.

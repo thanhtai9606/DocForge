@@ -1,0 +1,27 @@
+---
+description: DocForge core architecture invariants (CDOM, boundaries, messaging)
+alwaysApply: true
+---
+
+docforge-architecture:
+
+- Read `docs/PROJECT_SPEC.md` and `docs/CURSOR_INSTRUCTIONS.md` before implementing major components.
+- Do not change the architecture without explicit approval.
+- CDOM is the only contract between providers and exporters. Never bypass CDOM.
+- Go API must not import OCR frameworks or concrete provider implementations.
+- Exporters must only consume CDOM; never OCR/layout provider types.
+- Domain must not import infrastructure.
+- Keep HTTP handlers thin; put use cases in application services.
+- Use dependency injection and small interfaces.
+- Prefer simple implementations over speculative abstractions.
+- CPU-only; do not require NVIDIA GPU.
+- Preserve ARM64 and x86_64 compatibility.
+- Keep Python isolated to AI/OCR worker responsibilities unless a native Go path is deliberately chosen.
+- Do not introduce Kubernetes, Kafka, or micro-frontends unless explicitly requested.
+- RabbitMQ and Redis are approved for MVP:
+  - RabbitMQ = job/stage work queue, retries, DLQ
+  - Redis = progress cache / short-lived coordination / rate-limit helpers
+  - PostgreSQL = durable source of truth for documents, jobs, artifacts
+  - S3-compatible storage = PDFs, page images, CDOM JSON, export artifacts
+- Do not store large PDF binaries in PostgreSQL.
+- Providers must not update DB/job state directly or bypass the orchestrator.

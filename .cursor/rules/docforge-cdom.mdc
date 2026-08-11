@@ -1,0 +1,20 @@
+---
+description: DocForge CDOM schema and provider/export contract rules
+alwaysApply: true
+---
+
+docforge-cdom:
+
+- CDOM root fields: `schema_version`, `document_id`, `source`, `metadata`, `processing`, `pages`.
+- Page fields include: `page_number`, `width`, `height`, `rotation`, `language`, `blocks`.
+- Block fields include: `id`, `type`, `bbox`, `reading_order`, `confidence`, `language`, `text`, `children`, `attributes`.
+- BBox format is always `[x1, y1, x2, y2]`.
+- Initial block types: heading, paragraph, list, list_item, table, table_row, table_cell, image, code, formula, quote, page_break, unknown.
+- Tables must preserve row/cell structure.
+- Image blocks reference assets via `attributes.asset_id` (and optional `alt`).
+- Block confidence is the minimum required confidence level.
+- Layout providers own final `reading_order`.
+- Processing metadata must record provider_name, provider_version, model_name, model_version, cdm_schema_version.
+- Any schema evolution must stay backward-compatible for MVP unless explicitly approved.
+- Provider SDK surfaces: OCRProvider, LayoutProvider, Exporter, PostProcessor.
+- Provider selection may consider document type, language, capabilities, arch, CPU/GPU, health, priority — but selection stays outside providers themselves.
