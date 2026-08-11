@@ -1,0 +1,16 @@
+---
+description: Prefer CodeGraph for structural discovery to reduce AI token waste
+alwaysApply: true
+---
+
+docforge-codegraph:
+
+- For structural questions ("how does X work", "what calls Y", "blast radius of changing Z"), prefer CodeGraph before Grep/Glob/Read crawls.
+- Prefer MCP tool `codegraph_explore` when available. Treat returned source as already read — do not re-read the same files unless editing them.
+- CLI fallback when MCP is unavailable:
+  - `npx -y @colbymchenry/codegraph explore "<question>"`
+  - or `codegraph explore "<question>"` if installed on PATH
+- Do not spawn broad Explore/subagent file crawls for architecture discovery when CodeGraph can answer in one call.
+- After local edits, trust CodeGraph auto-sync; if results look stale, run `codegraph sync` (or `npx -y @colbymchenry/codegraph sync`) once.
+- First-time setup for a clone: `npx -y @colbymchenry/codegraph init` (creates `.codegraph/` index; DB is gitignored).
+- Keep using PROJECT_SPEC / Cursor architecture rules for product boundaries; use CodeGraph for live symbol/call relationships.
