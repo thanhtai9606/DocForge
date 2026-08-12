@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../services/api/client'
 
 function escapeHtml(s: string) {
@@ -62,6 +62,7 @@ function renderMarkdownSafe(md: string) {
 
 export function MarkdownEditorPage() {
   const { documentId = '' } = useParams()
+  const qc = useQueryClient()
   const artsQ = useQuery({
     queryKey: ['artifacts', documentId],
     queryFn: () => api.listArtifacts(documentId, '?kind=export&format=markdown'),
@@ -70,6 +71,8 @@ export function MarkdownEditorPage() {
   const mdArt = artsQ.data?.artifacts.find((a) => a.format === 'markdown')
   const [source, setSource] = useState('')
   const [loaded, setLoaded] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [message, setMessage] = useState('')
 
   useEffect(() => {
     if (!mdArt) return
@@ -78,11 +81,35 @@ export function MarkdownEditorPage() {
       .then((t) => {
         setSource(t)
         setLoaded(true)
+        setDirty(false)
       })
       .catch(() => setLoaded(true))
   }, [mdArt?.artifact_id])
 
   const preview = useMemo(() => renderMarkdownSafe(source), [source])
+
+  const save = useMutation({
+    mutationFn: () => api.saveMarkdown(documentId, source),
+    onSuccess: () => {
+      setDirty(false)
+      setMessage('Saved to artifact store.')
+      void qc.invalidateQueries({ queryKey: ['artifacts', documentId] })
+    },
+    onError: (err) => setMessage(err instanceof Error ? err.message : 'Save failed'),
+  })
+  const regen = useMutation({
+    mutationFn: () => api.regenerateMarkdown(documentId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['artifacts', documentId] })
+      if (mdArt) {
+        const t = await api.fetchText(api.artifactDownloadUrl(mdArt.artifact_id))
+        setSource(t)
+        setDirty(false)
+      }
+      setMessage('Regenerated markdown from CDOM.')
+    },
+    onError: (err) => setMessage(err instanceof Error ? err.message : 'Regenerate failed'),
+  })
 
   function copy() {
     void navigator.clipboard.writeText(source)
@@ -106,6 +133,12 @@ export function MarkdownEditorPage() {
           <p>Source on the left, safe preview on the right.</p>
         </div>
         <div className="actions">
+          <button type="button" className="ghost" onClick={() => save.mutate()} disabled={!mdArt || save.isPending}>
+            {save.isPending ? 'Saving…' : dirty ? 'Save*' : 'Save'}
+          </button>
+          <button type="button" className="ghost" onClick={() => regen.mutate()} disabled={!mdArt || regen.isPending}>
+            {regen.isPending ? 'Regenerating…' : 'Regenerate'}
+          </button>
           <button type="button" className="ghost" onClick={copy} disabled={!source}>
             Copy
           </button>
@@ -115,12 +148,16 @@ export function MarkdownEditorPage() {
           <Link to={`/documents/${documentId}`}>Viewer</Link>
         </div>
       </div>
+      {message ? <p className="muted">{message}</p> : null}
       {!loaded && <p>Loading markdown…</p>}
       <div className="split editor">
         <textarea
           className="editor-source"
           value={source}
-          onChange={(e) => setSource(e.target.value)}
+          onChange={(e) => {
+            setSource(e.target.value)
+            setDirty(true)
+          }}
           spellCheck={false}
           placeholder="Markdown will appear here after export completes."
         />

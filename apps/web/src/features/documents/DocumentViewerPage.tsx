@@ -3,6 +3,26 @@ import { Link, useParams } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { api, getToken } from '../../services/api/client'
 
+type CdomBlock = {
+  id?: string
+  type?: string
+  text?: string
+  bbox?: number[]
+  reading_order?: number
+  confidence?: number
+  children?: CdomBlock[]
+}
+
+type CdomPage = { page_number?: number; width?: number; height?: number; blocks?: CdomBlock[] }
+type CdomDoc = { pages?: CdomPage[] }
+
+function flattenBlocks(blocks: CdomBlock[] | undefined, page: number, acc: Array<CdomBlock & { page: number }>) {
+  for (const b of blocks ?? []) {
+    acc.push({ ...b, page })
+    if (b.children?.length) flattenBlocks(b.children, page, acc)
+  }
+}
+
 export function DocumentViewerPage() {
   const { documentId = '' } = useParams()
   const docQ = useQuery({
@@ -29,7 +49,6 @@ export function DocumentViewerPage() {
     return token ? `${url}?auth=1` : url
   }, [documentId])
 
-  // Fetch PDF as blob with auth header for iframe
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null)
   useEffect(() => {
     let revoke: string | null = null
@@ -53,6 +72,21 @@ export function DocumentViewerPage() {
   }, [documentId])
 
   const exports = artsQ.data?.artifacts.filter((a) => a.kind === 'export') ?? []
+  const cdom = useMemo<CdomDoc | null>(() => {
+    if (!cdomText) return null
+    try {
+      return JSON.parse(cdomText) as CdomDoc
+    } catch {
+      return null
+    }
+  }, [cdomText])
+  const blocks = useMemo(() => {
+    const acc: Array<CdomBlock & { page: number }> = []
+    for (const page of cdom?.pages ?? []) {
+      flattenBlocks(page.blocks, page.page_number ?? 0, acc)
+    }
+    return acc.sort((a, b) => (a.reading_order ?? 0) - (b.reading_order ?? 0))
+  }, [cdom])
 
   return (
     <section className="page">
@@ -87,7 +121,23 @@ export function DocumentViewerPage() {
               </li>
             ))}
           </ul>
-          <pre className="codeblock">{cdomText || 'No CDOM artifact yet.'}</pre>
+          {blocks.length > 0 ? (
+            <ol className="cdom-blocks">
+              {blocks.map((b, i) => (
+                <li key={b.id ?? `${b.page}-${i}`}>
+                  <span className="cdom-type">{b.type ?? 'unknown'}</span>
+                  <span className="muted">
+                    p{b.page} bbox {Array.isArray(b.bbox) ? b.bbox.map((n) => Math.round(n)).join(', ') : '—'}
+                  </span>
+                  <p>{b.text || '—'}</p>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+          <details>
+            <summary>Raw CDOM JSON</summary>
+            <pre className="codeblock">{cdomText || 'No CDOM artifact yet.'}</pre>
+          </details>
         </div>
       </div>
     </section>

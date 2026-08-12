@@ -282,6 +282,68 @@ func TestListArtifactsMissingDocument(t *testing.T) {
 	assertAppCode(t, err, domain.CodeNotFound)
 }
 
+func TestSaveAndRegenerateMarkdown(t *testing.T) {
+	svc, _, _, objects, artifacts := newService(t)
+	res, err := svc.UploadDocument(context.Background(), application.UploadInput{
+		Filename: "a.pdf",
+		Body:     bytes.NewReader([]byte("%PDF-1.4")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdKey := "documents/" + res.DocumentID + "/exports/output.md"
+	cdomKey := "documents/" + res.DocumentID + "/cdom.json"
+	cdomJSON := []byte(`{
+		"schema_version":"1.0","document_id":"` + res.DocumentID + `",
+		"source":{"filename":"a.pdf","mime_type":"application/pdf","page_count":1},
+		"metadata":{},"processing":{},
+		"pages":[{"page_number":1,"width":612,"height":792,"blocks":[
+			{"id":"b1","type":"paragraph","bbox":[0,0,100,20],"reading_order":1,"confidence":1,"text":"Hello regenerate"}
+		]}]
+	}`)
+	_ = objects.Put(context.Background(), mdKey, strings.NewReader("old"), 3, "text/markdown")
+	_ = objects.Put(context.Background(), cdomKey, bytes.NewReader(cdomJSON), int64(len(cdomJSON)), "application/json")
+	_ = artifacts.Create(context.Background(), &domain.Artifact{
+		ID: "md-1", DocumentID: res.DocumentID, JobID: res.JobID,
+		Kind: "export", Format: "markdown", StorageKey: mdKey, SizeBytes: 3, CreatedAt: time.Now().UTC(),
+	})
+	_ = artifacts.Create(context.Background(), &domain.Artifact{
+		ID: "cdom-1", DocumentID: res.DocumentID, JobID: res.JobID,
+		Kind: "cdom", Format: "json", StorageKey: cdomKey, SizeBytes: int64(len(cdomJSON)), CreatedAt: time.Now().UTC(),
+	})
+
+	saved, err := svc.SaveMarkdown(context.Background(), res.DocumentID, []byte("# edited\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.SizeBytes != 9 {
+		t.Fatalf("size=%d", saved.SizeBytes)
+	}
+	_, rc, err := svc.OpenArtifact(context.Background(), "md-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(body) != "# edited\n" {
+		t.Fatalf("saved body=%q", body)
+	}
+
+	regen, err := svc.RegenerateMarkdown(context.Background(), res.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rc, err = svc.OpenArtifact(context.Background(), regen.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(rc)
+	_ = rc.Close()
+	if !strings.Contains(string(body), "Hello regenerate") {
+		t.Fatalf("regen body=%q", body)
+	}
+}
+
 func assertAppCode(t *testing.T, err error, code string) {
 	t.Helper()
 	appErr, ok := domain.AsAppError(err)

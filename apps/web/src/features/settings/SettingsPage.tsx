@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '../../app/providers/AuthProvider'
 
 type Prefs = {
   defaultFormats: string[]
@@ -19,6 +20,7 @@ function load(): Prefs {
 }
 
 export function SettingsPage() {
+  const { user } = useAuth()
   const [prefs, setPrefs] = useState<Prefs>(load)
 
   useEffect(() => {
@@ -44,6 +46,14 @@ export function SettingsPage() {
         </div>
       </div>
       <div className="settings">
+        <div className="account-card">
+          <h2>Account</h2>
+          <p>
+            {user?.name || 'Local user'}
+            {user?.email ? ` · ${user.email}` : ''}
+          </p>
+          <p className="muted">Provider: {user?.provider || 'bypass'}</p>
+        </div>
         <label>
           Theme
           <select

@@ -12,8 +12,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/export"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/jobs"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
+	"github.com/thanhtai9606/DocForge/packages/cdom"
 )
 
 // Service implements document/job use cases.
@@ -297,6 +299,79 @@ func (s *Service) RetryJob(ctx context.Context, jobID string) (*domain.Job, erro
 		return nil, domain.NewAppError(domain.CodeInternal, "failed to enqueue retry job", true)
 	}
 	return job, nil
+}
+
+func (s *Service) findArtifact(ctx context.Context, documentID, kind, format string) (*domain.Artifact, error) {
+	list, err := s.Artifacts.ListByDocument(ctx, documentID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if strings.EqualFold(list[i].Kind, kind) && strings.EqualFold(list[i].Format, format) {
+			cp := list[i]
+			return &cp, nil
+		}
+	}
+	return nil, domain.NewAppError(domain.CodeNotFound, kind+"/"+format+" artifact not found", false)
+}
+
+// SaveMarkdown overwrites the markdown export artifact in object storage.
+func (s *Service) SaveMarkdown(ctx context.Context, documentID string, body []byte) (*domain.Artifact, error) {
+	if _, err := s.Documents.Get(ctx, documentID); err != nil {
+		return nil, err
+	}
+	art, err := s.findArtifact(ctx, documentID, "export", "markdown")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Objects.Put(ctx, art.StorageKey, bytes.NewReader(body), int64(len(body)), "text/markdown; charset=utf-8"); err != nil {
+		return nil, err
+	}
+	art.SizeBytes = int64(len(body))
+	if err := s.Artifacts.Update(ctx, art); err != nil {
+		return nil, err
+	}
+	return art, nil
+}
+
+// RegenerateMarkdown re-exports markdown from the stored CDOM without re-running OCR.
+func (s *Service) RegenerateMarkdown(ctx context.Context, documentID string) (*domain.Artifact, error) {
+	if _, err := s.Documents.Get(ctx, documentID); err != nil {
+		return nil, err
+	}
+	cdomArt, err := s.findArtifact(ctx, documentID, "cdom", "json")
+	if err != nil {
+		return nil, err
+	}
+	rc, err := s.Objects.Get(ctx, cdomArt.StorageKey)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		return nil, err
+	}
+	doc, err := cdom.UnmarshalDocument(raw)
+	if err != nil {
+		return nil, domain.NewAppError(domain.CodeNormalizationFailed, err.Error(), false)
+	}
+	payload, err := export.NewMarkdown().Export(ctx, doc)
+	if err != nil {
+		return nil, domain.NewAppError(domain.CodeExportFailed, err.Error(), false)
+	}
+	md, err := s.findArtifact(ctx, documentID, "export", "markdown")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Objects.Put(ctx, md.StorageKey, bytes.NewReader(payload.Body), int64(len(payload.Body)), payload.ContentType); err != nil {
+		return nil, err
+	}
+	md.SizeBytes = int64(len(payload.Body))
+	if err := s.Artifacts.Update(ctx, md); err != nil {
+		return nil, err
+	}
+	return md, nil
 }
 
 func sanitizeFilename(name string) string {

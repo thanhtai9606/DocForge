@@ -49,8 +49,9 @@ make run-api           # HTTP API on port 8080
 make run-worker        # RabbitMQ processing worker
 make run-web           # Vite frontend (proxies /api → port 8080)
 make run-all           # infra + API + worker (one terminal)
+make run-ocr           # Tesseract CPU sidecar :8090
 make test              # CDOM + API tests
-make docker-build-all  # ghcr.io/<owner>/docforge-api + docforge-worker
+make docker-build-all  # api + worker + ocr images
 ```
 
 ### Run dependencies
@@ -79,6 +80,7 @@ Requires compose infra (Postgres, Redis, RabbitMQ, MinIO):
 
 ```bash
 make run-worker
+# optional real OCR: make run-ocr && OCR_PROVIDER=http OCR_URL=http://127.0.0.1:8090 make run-worker
 ```
 
 ### Tests
@@ -93,6 +95,7 @@ On push to **`main`** (and `v*` tags / manual dispatch), GitHub Actions builds m
 
 - `ghcr.io/<owner>/docforge-api`
 - `ghcr.io/<owner>/docforge-worker`
+- local OCR sidecar: `docforge-ocr` (`make docker-build-ocr`)
 
 Platforms: `linux/amd64`, `linux/arm64`.
 

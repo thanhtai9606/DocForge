@@ -61,6 +61,9 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("RABBITMQ_EXCHANGE", "ex")
 	t.Setenv("RABBITMQ_QUEUE", "q")
 	t.Setenv("RABBITMQ_ROUTING_KEY", "rk")
+	t.Setenv("OCR_PROVIDER", "http")
+	t.Setenv("OCR_URL", "http://ocr:8090")
+	t.Setenv("OCR_TIMEOUT", "45s")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -83,5 +86,8 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.RabbitExchange != "ex" || cfg.RabbitQueue != "q" || cfg.RabbitRoutingKey != "rk" {
 		t.Fatalf("rabbit cfg wrong: %+v", cfg)
+	}
+	if cfg.OCRProvider != "http" || cfg.OCRURL != "http://ocr:8090" || cfg.OCRTimeout != 45*time.Second {
+		t.Fatalf("ocr cfg wrong: %+v", cfg)
 	}
 }

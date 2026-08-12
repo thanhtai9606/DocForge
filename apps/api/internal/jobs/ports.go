@@ -27,6 +27,7 @@ type JobRepository interface {
 // ArtifactRepository persists artifact metadata.
 type ArtifactRepository interface {
 	Create(ctx context.Context, artifact *domain.Artifact) error
+	Update(ctx context.Context, artifact *domain.Artifact) error
 	ListByDocument(ctx context.Context, documentID string) ([]domain.Artifact, error)
 	Get(ctx context.Context, id string) (*domain.Artifact, error)
 	DeleteByDocument(ctx context.Context, documentID string) error

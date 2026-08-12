@@ -171,6 +171,17 @@ func (r *ArtifactRepo) Create(_ context.Context, artifact *domain.Artifact) erro
 	return nil
 }
 
+func (r *ArtifactRepo) Update(_ context.Context, artifact *domain.Artifact) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.data[artifact.ID]; !ok {
+		return domain.NewAppError(domain.CodeNotFound, "artifact not found", false)
+	}
+	cp := *artifact
+	r.data[artifact.ID] = &cp
+	return nil
+}
+
 func (r *ArtifactRepo) ListByDocument(_ context.Context, documentID string) ([]domain.Artifact, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -252,7 +263,7 @@ func (s *ObjectStore) Delete(_ context.Context, key string) error {
 
 // Queue captures published jobs.
 type Queue struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	Messages []struct{ JobID, DocumentID string }
 }
 

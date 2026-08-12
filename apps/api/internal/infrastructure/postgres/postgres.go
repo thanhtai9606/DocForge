@@ -190,6 +190,21 @@ func (r *ArtifactRepo) Create(ctx context.Context, artifact *domain.Artifact) er
 	return err
 }
 
+func (r *ArtifactRepo) Update(ctx context.Context, artifact *domain.Artifact) error {
+	res, err := r.store.db.ExecContext(ctx, `
+		UPDATE artifacts SET kind=$2, format=$3, storage_key=$4, size_bytes=$5 WHERE id=$1`,
+		artifact.ID, artifact.Kind, artifact.Format, artifact.StorageKey, artifact.SizeBytes,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return domain.NewAppError(domain.CodeNotFound, "artifact not found", false)
+	}
+	return nil
+}
+
 func (r *ArtifactRepo) ListByDocument(ctx context.Context, documentID string) ([]domain.Artifact, error) {
 	rows, err := r.store.db.QueryContext(ctx, `
 		SELECT id, document_id, job_id, kind, format, storage_key, size_bytes, created_at

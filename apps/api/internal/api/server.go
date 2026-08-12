@@ -93,8 +93,11 @@ func NewServer(svc *application.Service, opts ...Options) http.Handler {
 		r.Get("/documents/{documentID}/artifacts", s.listArtifacts)
 		r.Get("/documents/{documentID}/job", s.latestJob)
 		r.Get("/documents/{documentID}/original", s.downloadOriginal)
+		r.Put("/documents/{documentID}/markdown", s.saveMarkdown)
+		r.Post("/documents/{documentID}/markdown/regenerate", s.regenerateMarkdown)
 
 		r.Get("/jobs/{jobID}", s.getJob)
+		r.Get("/jobs/{jobID}/events", s.jobEvents)
 		r.Post("/jobs/{jobID}/cancel", s.cancelJob)
 		r.Post("/jobs/{jobID}/retry", s.retryJob)
 
@@ -275,6 +278,123 @@ func (s *Server) latestJob(w http.ResponseWriter, r *http.Request) {
 	writeJob(w, job)
 }
 
+func (s *Server) saveMarkdown(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, s.Service.MaxBytes+1))
+	if err != nil {
+		writeError(w, r, domain.NewAppError(domain.CodeInternal, "failed to read body", true))
+		return
+	}
+	if int64(len(raw)) > s.Service.MaxBytes && s.Service.MaxBytes > 0 {
+		writeError(w, r, domain.NewAppError(domain.CodeFileTooLarge, "markdown exceeds size limit", false))
+		return
+	}
+	if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "json") {
+		var payload struct {
+			Markdown string `json:"markdown"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			writeError(w, r, domain.NewAppError(domain.CodeInternal, "invalid json body", false))
+			return
+		}
+		raw = []byte(payload.Markdown)
+	}
+	art, err := s.Service.SaveMarkdown(r.Context(), chi.URLParam(r, "documentID"), raw)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_id": art.ID,
+		"size_bytes":  art.SizeBytes,
+		"format":      art.Format,
+	})
+}
+
+func (s *Server) regenerateMarkdown(w http.ResponseWriter, r *http.Request) {
+	art, err := s.Service.RegenerateMarkdown(r.Context(), chi.URLParam(r, "documentID"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"artifact_id": art.ID,
+		"size_bytes":  art.SizeBytes,
+		"format":      art.Format,
+	})
+}
+
+func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	jobID := chi.URLParam(r, "jobID")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flush()
+
+	send := func(event string, job *domain.Job) {
+		payload := map[string]any{
+			"job_id":      job.ID,
+			"document_id": job.DocumentID,
+			"status":      job.Status,
+			"stage":       job.Stage,
+			"progress":    job.Progress,
+			"attempts":    job.Attempts,
+			"created_at":  job.CreatedAt,
+			"updated_at":  job.UpdatedAt,
+		}
+		if job.ErrorCode != "" {
+			payload["error"] = map[string]any{"code": job.ErrorCode, "message": job.ErrorMsg}
+		}
+		raw, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw)
+		flush()
+	}
+
+	job, err := s.Service.GetJob(r.Context(), jobID)
+	if err != nil {
+		raw, _ := json.Marshal(map[string]string{"message": err.Error()})
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", raw)
+		flush()
+		return
+	}
+	send("progress", job)
+	if job.Status == domain.JobCompleted || job.Status == domain.JobFailed || job.Status == domain.JobCancelled {
+		send("done", job)
+		return
+	}
+
+	tick := time.NewTicker(750 * time.Millisecond)
+	defer tick.Stop()
+	last := fmt.Sprintf("%s|%s|%d", job.Status, job.Stage, job.Progress)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+			job, err = s.Service.GetJob(r.Context(), jobID)
+			if err != nil {
+				return
+			}
+			sig := fmt.Sprintf("%s|%s|%d", job.Status, job.Stage, job.Progress)
+			if sig != last {
+				last = sig
+				send("progress", job)
+			}
+			if job.Status == domain.JobCompleted || job.Status == domain.JobFailed || job.Status == domain.JobCancelled {
+				send("done", job)
+				return
+			}
+		}
+	}
+}
+
 func (s *Server) downloadOriginal(w http.ResponseWriter, r *http.Request) {
 	doc, rc, err := s.Service.OpenOriginal(r.Context(), chi.URLParam(r, "documentID"))
 	if err != nil {
@@ -364,15 +484,15 @@ func (s *Server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		}
 		name := artifacts.DownloadName(doc, &a)
 		items = append(items, map[string]any{
-			"artifact_id":   a.ID,
-			"document_id":   a.DocumentID,
-			"job_id":        a.JobID,
-			"kind":          a.Kind,
-			"format":        a.Format,
-			"filename":      name,
-			"size_bytes":    a.SizeBytes,
-			"download_url":  "/api/v1/artifacts/" + a.ID + "/download",
-			"created_at":    a.CreatedAt,
+			"artifact_id":  a.ID,
+			"document_id":  a.DocumentID,
+			"job_id":       a.JobID,
+			"kind":         a.Kind,
+			"format":       a.Format,
+			"filename":     name,
+			"size_bytes":   a.SizeBytes,
+			"download_url": "/api/v1/artifacts/" + a.ID + "/download",
+			"created_at":   a.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": items})

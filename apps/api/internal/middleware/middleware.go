@@ -37,7 +37,7 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Content-Disposition")
 			}
 			if r.Method == http.MethodOptions {
@@ -54,10 +54,17 @@ func containsOrigin(set map[string]struct{}, origin string) bool {
 	return ok
 }
 
-// Timeout bounds request handling duration.
+// Timeout bounds request handling duration. SSE/event streams skip the deadline.
 func Timeout(d time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.TimeoutHandler(next, d, `{"error":{"code":"TIMEOUT","message":"request timed out","retryable":true}}`)
+		timed := http.TimeoutHandler(next, d, `{"error":{"code":"TIMEOUT","message":"request timed out","retryable":true}}`)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			timed.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -165,4 +172,10 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

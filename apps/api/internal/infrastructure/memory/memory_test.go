@@ -81,6 +81,26 @@ func TestArtifactRepo(t *testing.T) {
 	}
 }
 
+func TestArtifactRepoUpdate(t *testing.T) {
+	repo := memory.NewArtifactRepo()
+	ctx := context.Background()
+	art := &domain.Artifact{ID: "a1", DocumentID: "d1", Kind: "export", Format: "markdown", SizeBytes: 3}
+	if err := repo.Create(ctx, art); err != nil {
+		t.Fatal(err)
+	}
+	art.SizeBytes = 12
+	if err := repo.Update(ctx, art); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.Get(ctx, "a1")
+	if err != nil || got.SizeBytes != 12 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if err := repo.Update(ctx, &domain.Artifact{ID: "missing"}); err == nil {
+		t.Fatal("expected not found")
+	}
+}
+
 func TestObjectStoreRoundTrip(t *testing.T) {
 	store := memory.NewObjectStore()
 	ctx := context.Background()

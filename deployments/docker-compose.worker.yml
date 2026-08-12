@@ -1,0 +1,40 @@
+# OCR sidecar + Go processing worker.
+# Start infra first, then:
+#   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.worker.yml up -d
+services:
+  ocr:
+    image: ${OCR_IMAGE:-docforge-ocr:local}
+    build:
+      context: ../apps/worker
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      OCR_ADDR: 0.0.0.0:8090
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  worker:
+    image: ghcr.io/${GHCR_OWNER:-thanhtai9606}/docforge-worker:${WORKER_IMAGE_TAG:-latest}
+    environment:
+      DATABASE_URL: postgres://docforge:docforge@postgres:5432/docforge?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://docforge:docforge@rabbitmq:5672/
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_REGION: us-east-1
+      MINIO_BUCKET: docforge
+      MINIO_ACCESS_KEY: docforge
+      MINIO_SECRET_KEY: docforge_secret
+      MINIO_USE_PATH_STYLE: "true"
+      OCR_PROVIDER: http
+      OCR_URL: http://ocr:8090
+      OCR_TIMEOUT: 90s
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+      - minio
+      - ocr

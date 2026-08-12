@@ -156,6 +156,16 @@ fieldset { border: 1px solid var(--line); border-radius: .85rem; }
 .editor-source { width: 100%; min-height: 65vh; padding: 1rem; resize: vertical; border: 1px solid var(--line); }
 .editor-preview { padding: 1rem 1.25rem; overflow: auto; }
 .artifact-list { margin: 0; padding-left: 1.1rem; }
+.cdom-blocks { margin: 0; padding-left: 1.1rem; max-height: 40vh; overflow: auto; }
+.cdom-blocks li { margin: 0 0 .75rem; }
+.cdom-type {
+  display: inline-block; margin-right: .5rem; font-size: .75rem; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted);
+}
+.account-card {
+  border: 1px solid var(--line); border-radius: .85rem; padding: 1rem;
+}
+.account-card h2 { margin: 0 0 .35rem; font-size: 1rem; }
 label { display: grid; gap: .35rem; }
 input, select, textarea {
   border: 1px solid var(--line); border-radius: .65rem; padding: .65rem .75rem; background: transparent; color: var(--text);

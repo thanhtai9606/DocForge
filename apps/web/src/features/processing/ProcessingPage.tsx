@@ -1,9 +1,14 @@
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../../services/api/client'
+import type { JobItem } from '../../types/api'
 
 export function ProcessingPage() {
   const { documentId = '' } = useParams()
+  const [liveJob, setLiveJob] = useState<JobItem | null>(null)
+  const [sseActive, setSseActive] = useState(false)
+
   const docQ = useQuery({
     queryKey: ['document', documentId],
     queryFn: () => api.getDocument(documentId),
@@ -12,18 +17,53 @@ export function ProcessingPage() {
   const jobQ = useQuery({
     queryKey: ['job-latest', documentId],
     queryFn: () => api.latestJob(documentId),
-    enabled: !!documentId,
+    enabled: !!documentId && !sseActive,
     refetchInterval: (q) => {
       const s = q.state.data?.status
       return s === 'queued' || s === 'processing' ? 1500 : false
     },
   })
+
+  useEffect(() => {
+    if (!documentId) return
+    const ac = new AbortController()
+    let stopped = false
+    ;(async () => {
+      try {
+        const latest = await api.latestJob(documentId)
+        setLiveJob(latest)
+        if (latest.status !== 'queued' && latest.status !== 'processing') return
+        setSseActive(true)
+        await api.subscribeJobEvents(
+          latest.job_id,
+          (ev) => {
+            if (ev.job) setLiveJob(ev.job)
+            if (ev.type === 'done') setSseActive(false)
+          },
+          ac.signal,
+        )
+      } catch {
+        if (!stopped) setSseActive(false)
+      } finally {
+        if (!stopped) setSseActive(false)
+      }
+    })()
+    return () => {
+      stopped = true
+      ac.abort()
+      setSseActive(false)
+    }
+  }, [documentId])
+
   const cancel = useMutation({
-    mutationFn: () => api.cancelJob(jobQ.data!.job_id),
-    onSuccess: () => jobQ.refetch(),
+    mutationFn: () => api.cancelJob((liveJob ?? jobQ.data)!.job_id),
+    onSuccess: (job) => {
+      setLiveJob(job)
+      void jobQ.refetch()
+    },
   })
 
-  const job = jobQ.data
+  const job = liveJob ?? jobQ.data
   const started = job?.created_at ? new Date(job.created_at).getTime() : Date.now()
   const elapsedSec = Math.max(0, Math.round((Date.now() - started) / 1000))
 
@@ -37,8 +77,8 @@ export function ProcessingPage() {
         <Link to={`/documents/${documentId}`}>Open document</Link>
       </div>
 
-      {jobQ.isLoading ? <p>Loading job…</p> : null}
-      {jobQ.error ? <p className="error">{(jobQ.error as Error).message}</p> : null}
+      {jobQ.isLoading && !job ? <p>Loading job…</p> : null}
+      {jobQ.error && !job ? <p className="error">{(jobQ.error as Error).message}</p> : null}
 
       {job ? (
         <div className="progress-panel">
@@ -47,6 +87,7 @@ export function ProcessingPage() {
             <span>Stage: {job.stage}</span>
             <span>Elapsed: {elapsedSec}s</span>
             <span>Attempts: {job.attempts ?? 0}</span>
+            <span className="muted">{sseActive ? 'live SSE' : 'polling'}</span>
           </div>
           <div className="bar large">
             <span style={{ width: `${job.progress}%` }} />

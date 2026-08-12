@@ -106,4 +106,55 @@ export const api = {
     if (!res.ok) throw new Error('failed to load content')
     return res.text()
   },
+  saveMarkdown(documentId: string, markdown: string) {
+    return request<{ artifact_id: string; size_bytes: number; format: string }>(
+      `/api/v1/documents/${documentId}/markdown`,
+      { method: 'PUT', body: JSON.stringify({ markdown }) },
+    )
+  },
+  regenerateMarkdown(documentId: string) {
+    return request<{ artifact_id: string; size_bytes: number; format: string }>(
+      `/api/v1/documents/${documentId}/markdown/regenerate`,
+      { method: 'POST' },
+    )
+  },
+  async subscribeJobEvents(
+    jobId: string,
+    onEvent: (ev: { type: string; job?: JobItem; error?: string }) => void,
+    signal?: AbortSignal,
+  ) {
+    const headers = new Headers()
+    const token = getToken()
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const res = await fetch(`/api/v1/jobs/${jobId}/events`, { headers, signal })
+    if (!res.ok || !res.body) {
+      throw new Error(`sse failed (${res.status})`)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() ?? ''
+      for (const block of parts) {
+        let type = 'message'
+        let data = ''
+        for (const line of block.split('\n')) {
+          if (line.startsWith('event:')) type = line.slice(6).trim()
+          if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        if (!data) continue
+        try {
+          const parsed = JSON.parse(data) as JobItem & { message?: string }
+          if (type === 'error') onEvent({ type, error: parsed.message ?? data })
+          else onEvent({ type, job: parsed })
+        } catch {
+          onEvent({ type, error: data })
+        }
+      }
+    }
+  },
 }

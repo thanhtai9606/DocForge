@@ -10,14 +10,15 @@ import (
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/config"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
+	miniostore "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/minio"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/postgres"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/rabbitmq"
 	redisx "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/redis"
-	miniostore "github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/minio"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/jobs"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/metrics"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/orchestrator"
-	"github.com/thanhtai9606/DocForge/apps/api/internal/providers/stubocr"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/providers/ocrselect"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/storage"
 )
 
@@ -39,18 +40,20 @@ func main() {
 	}
 	defer cleanup()
 
+	ocr := ocrselect.New(cfg, logger)
 	engine := &orchestrator.Engine{
 		Documents: docs,
 		Jobs:      jobRepo,
 		Artifacts: artifacts,
 		Objects:   objects,
 		Progress:  progress,
-		OCR:       stubocr.New(),
+		OCR:       ocr,
+		Observer:  metrics.New(),
 		Layout:    nil, // geometric default inside engine
 		Exporters: nil, // json+markdown+docx defaults
 	}
 
-	logger.Info("worker listening", "queue", cfg.RabbitQueue)
+	logger.Info("worker listening", "queue", cfg.RabbitQueue, "ocr", ocr.Name())
 	err = consumer.Serve(ctx, func(cctx context.Context, msg rabbitmq.ProcessJobMessage) error {
 		log := logger.With("job_id", msg.JobID, "document_id", msg.DocumentID)
 		log.Info("processing job")

@@ -24,20 +24,23 @@ endif
 
 API_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-api
 WORKER_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-worker
+OCR_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-ocr
 
 ENV_FILE ?= apps/api/configs/local.env
 ENV_EXAMPLE := apps/api/configs/local.env.example
 COMPOSE_INFRA := docker compose -f deployments/docker-compose.yml
 COMPOSE_API := docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml
+COMPOSE_WORKER := docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.worker.yml
 
 .PHONY: help \
 	api worker build build-go build-api build-worker build-linux-go build-linux-all build-all \
 	build-web build-frontend \
-	run-api run-worker run-api-memory run-web run-all \
-	infra infra-down infra-logs up down up-api down-api \
+	run-api run-worker run-api-memory run-web run-ocr run-all \
+	infra infra-down infra-logs up down up-api down-api up-worker down-worker \
 	test test-go test-cdom test-api test-web fmt vet lint-web tidy tidy-go clean env codegraph \
 	docker-build-all docker-package docker-push-all docker-login \
-	docker-build-api docker-build-worker docker-push-api docker-push-worker
+	docker-build-api docker-build-worker docker-build-ocr \
+	docker-push-api docker-push-worker docker-push-ocr
 
 ## help: Show Makefile targets
 help:
@@ -107,6 +110,10 @@ run-worker: env
 	@$(MAKE) build-worker
 	@bash -c '$(_run_env); exec ./$(WORKER_BINARY)'
 
+## run-ocr: Python Tesseract sidecar on port 8090 (needs tesseract + pdftoppm)
+run-ocr:
+	python3 apps/worker/ocr_server.py
+
 ## run-api-memory: API with in-memory adapters (no Postgres/Redis/RabbitMQ/MinIO)
 run-api-memory:
 	@$(MAKE) build-api
@@ -149,6 +156,14 @@ up-api:
 ## down-api: Stop infra + API overlay
 down-api:
 	GHCR_OWNER=$(GHCR_OWNER) API_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_API) down
+
+## up-worker: Infra + OCR sidecar + Go worker
+up-worker:
+	GHCR_OWNER=$(GHCR_OWNER) WORKER_IMAGE_TAG=$(IMAGE_TAG) OCR_IMAGE=$(OCR_IMAGE):$(IMAGE_TAG) $(COMPOSE_WORKER) up -d --build
+
+## down-worker: Stop infra + worker overlay
+down-worker:
+	GHCR_OWNER=$(GHCR_OWNER) WORKER_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_WORKER) down
 
 # --- Quality ---
 
@@ -195,8 +210,8 @@ clean:
 
 # --- Docker (context = repo root; images build Go inside) ---
 
-## docker-build-all: docforge-api + docforge-worker images
-docker-build-all: docker-build-api docker-build-worker
+## docker-build-all: API + Go worker + OCR sidecar images
+docker-build-all: docker-build-api docker-build-worker docker-build-ocr
 
 ## docker-package: Alias docker-build-all
 docker-package: docker-build-all
@@ -215,8 +230,16 @@ docker-build-worker:
 		-t $(WORKER_IMAGE):local \
 		.
 
-## docker-push-all: Push API + worker (docker login first)
-docker-push-all: docker-push-api docker-push-worker
+## docker-build-ocr: Tesseract CPU OCR sidecar
+docker-build-ocr:
+	docker build -f apps/worker/Dockerfile \
+		-t $(OCR_IMAGE):$(IMAGE_TAG) \
+		-t $(OCR_IMAGE):local \
+		-t docforge-ocr:local \
+		apps/worker
+
+## docker-push-all: Push API + worker + OCR (docker login first)
+docker-push-all: docker-push-api docker-push-worker docker-push-ocr
 
 docker-push-api:
 	docker push $(API_IMAGE):$(IMAGE_TAG)
@@ -224,7 +247,10 @@ docker-push-api:
 docker-push-worker:
 	docker push $(WORKER_IMAGE):$(IMAGE_TAG)
 
+docker-push-ocr:
+	docker push $(OCR_IMAGE):$(IMAGE_TAG)
+
 ## docker-login: Hint for GHCR login
 docker-login:
 	@echo "Run: docker login $(DOCKER_REGISTRY) -u USERNAME"
-	@echo "Images: $(API_IMAGE):$(IMAGE_TAG)  $(WORKER_IMAGE):$(IMAGE_TAG)"
+	@echo "Images: $(API_IMAGE):$(IMAGE_TAG)  $(WORKER_IMAGE):$(IMAGE_TAG)  $(OCR_IMAGE):$(IMAGE_TAG)"

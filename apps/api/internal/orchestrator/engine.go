@@ -63,6 +63,13 @@ type OCRResult struct {
 	Language   string
 }
 
+// Observer records pipeline timings. Optional; nil is ignored.
+type Observer interface {
+	ObserveOCR(d time.Duration, err error)
+	ObserveExport(d time.Duration, err error)
+	ObserveProcessing(d time.Duration)
+}
+
 // Engine runs a production processing pipeline for one job.
 type Engine struct {
 	Documents jobs.DocumentRepository
@@ -73,6 +80,7 @@ type Engine struct {
 	OCR       OCRProvider
 	Layout    layout.Provider
 	Exporters []export.Exporter
+	Observer  Observer
 	// MaxParallelPages bounds page-level fan-out for extract/OCR.
 	MaxParallelPages int
 	Now              func() time.Time
@@ -383,13 +391,18 @@ func (e *Engine) ocrPage(ctx context.Context, doc *domain.Document, pdf []byte, 
 	if e.OCR == nil {
 		return OCRResult{}, fmt.Errorf("ocr provider not configured")
 	}
-	return e.OCR.Process(ctx, OCRRequest{
+	start := time.Now()
+	res, err := e.OCR.Process(ctx, OCRRequest{
 		DocumentID: doc.ID,
 		PageNumber: pageNumber,
 		AssetURI:   doc.StorageKey,
 		Language:   []string{"vi", "en"},
 		Payload:    pdf,
 	})
+	if e.Observer != nil {
+		e.Observer.ObserveOCR(time.Since(start), err)
+	}
+	return res, err
 }
 
 func (e *Engine) ensureExports(ctx context.Context, job *domain.Job, doc *domain.Document, cdomKey string) ([]string, error) {
@@ -421,7 +434,11 @@ func (e *Engine) ensureExports(ctx context.Context, job *domain.Job, doc *domain
 			ids = append(ids, existing.ID)
 			continue
 		}
+		exportStart := time.Now()
 		artPayload, err := ex.Export(ctx, cdomDoc)
+		if e.Observer != nil {
+			e.Observer.ObserveExport(time.Since(exportStart), err)
+		}
 		if err != nil {
 			return nil, e.fail(ctx, job, doc, domain.CodeExportFailed, err.Error(), false)
 		}
@@ -499,7 +516,9 @@ func (e *Engine) complete(ctx context.Context, job *domain.Job, doc *domain.Docu
 		return nil, err
 	}
 	_ = e.setProgress(ctx, job, "completed", 100)
-	_ = start
+	if e.Observer != nil {
+		e.Observer.ObserveProcessing(e.now().Sub(start))
+	}
 	return &RunResult{Kind: kind, CDOMKey: cdomKey, ArtifactIDs: ids}, nil
 }
 

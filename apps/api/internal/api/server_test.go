@@ -224,6 +224,49 @@ func TestArtifactsListAndDownload(t *testing.T) {
 	}
 }
 
+func TestSaveMarkdownAndJobEvents(t *testing.T) {
+	h := newHarness()
+	docID, jobID := uploadPDF(t, h.handler, "sample.pdf", []byte("%PDF-1.4"), "")
+	key := "documents/" + docID + "/exports/output.md"
+	if err := h.objects.Put(context.Background(), key, strings.NewReader("old"), 3, "text/markdown"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.artifacts.Create(context.Background(), &domain.Artifact{
+		ID: "md-1", DocumentID: docID, JobID: jobID, Kind: "export", Format: "markdown",
+		StorageKey: key, SizeBytes: 3, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/documents/"+docID+"/markdown", strings.NewReader("# saved\n"))
+	req.Header.Set("Content-Type", "text/markdown")
+	rr := httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !bytes.Contains(rr.Body.Bytes(), []byte("md-1")) {
+		t.Fatalf("save status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/jobs/"+jobID+"/cancel", nil)
+	rr = httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cancel status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+jobID+"/events", nil)
+	rr = httptest.NewRecorder()
+	h.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("sse status=%d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("content-type=%q", ct)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("event: progress")) {
+		t.Fatalf("sse body=%s", rr.Body.String())
+	}
+}
+
 func TestDownloadArtifactNotFound(t *testing.T) {
 	h := newHarness()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/artifacts/nope/download", nil)
