@@ -20,6 +20,7 @@ node_modules/
 tmp/
 data/
 coverage/
+.run/
 
 # CodeGraph local index (DB is machine-local; keep .codegraph/.gitignore tracked)
 .codegraph/*

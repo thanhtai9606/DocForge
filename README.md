@@ -38,32 +38,39 @@ Restart Cursor after clone so MCP loads. See `docs/CODEGRAPH.md`.
 - **PostgreSQL** — durable metadata and job state
 - **MinIO** — PDFs and artifacts (self-hosted object storage)
 
-## Phase 1 status
+## Makefile
 
-Foundation is implemented:
-
-- `packages/cdom` — CDOM types + validation
-- `apps/api` — domain, config, logging, REST `/api/v1`, application services
-- Infrastructure adapters: Postgres, Redis, RabbitMQ, MinIO (+ in-memory for tests)
-- `deployments/docker-compose.yml` — postgres, redis, rabbitmq, minio
+```bash
+make help              # all targets
+make env               # copy apps/api/configs/local.env.example → local.env
+make infra             # postgres + redis + rabbitmq + minio
+make build-go          # bin/api + bin/worker
+make run-api           # HTTP API on port 8080
+make run-worker        # RabbitMQ processing worker
+make run-web           # Vite frontend (proxies /api → port 8080)
+make run-all           # infra + API + worker (one terminal)
+make test              # CDOM + API tests
+make docker-build-all  # ghcr.io/<owner>/docforge-api + docforge-worker
+```
 
 ### Run dependencies
 
 ```bash
-docker compose -f deployments/docker-compose.yml up -d
+make infra
+# or: docker compose -f deployments/docker-compose.yml up -d
 ```
 
 ### Run API
 
 ```bash
-set -a && source apps/api/configs/local.env.example && set +a
-go run ./apps/api/cmd/api
+make env
+make run-api
 ```
 
 For local smoke without infra:
 
 ```bash
-DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
+make run-api-memory
 ```
 
 ### Run worker (Phase 2)
@@ -71,14 +78,13 @@ DOCFORGE_USE_MEMORY=1 go run ./apps/api/cmd/api
 Requires compose infra (Postgres, Redis, RabbitMQ, MinIO):
 
 ```bash
-set -a && source apps/api/configs/local.env.example && set +a
-go run ./apps/api/cmd/worker
+make run-worker
 ```
 
 ### Tests
 
 ```bash
-./scripts/test.sh
+make test
 ```
 
 ## Container images (GHCR)
@@ -102,15 +108,19 @@ ghcr.io/<owner>/docforge-worker:sha-<commit>
 Local build (from repo root):
 
 ```bash
-docker build -f apps/api/Dockerfile -t docforge-api:local .
-docker build -f apps/api/Dockerfile.worker -t docforge-worker:local .
+make docker-build-all
+# or:
+# docker build -f apps/api/Dockerfile -t docforge-api:local .
+# docker build -f apps/api/Dockerfile.worker -t docforge-worker:local .
 ```
 
 Run published API with local infra:
 
 ```bash
-docker compose -f deployments/docker-compose.yml up -d
-docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml up -d api
+make up-api
+# or:
+# docker compose -f deployments/docker-compose.yml up -d
+# docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml up -d api
 ```
 
 Package visibility: ensure the `docforge-api` GHCR package allows the intended audience (private/public) in GitHub Packages settings.
