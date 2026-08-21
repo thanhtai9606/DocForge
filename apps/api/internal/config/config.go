@@ -40,6 +40,8 @@ type Config struct {
 	CORSOrigins           []string
 	RatePerMinute         int
 	RateBurst             int
+	AnonUploadLimit       int
+	AuthUploadLimit       int
 	ArtifactTTL           time.Duration
 	CleanupInterval       time.Duration
 	OCRProvider           string
@@ -80,6 +82,8 @@ func Load() (Config, error) {
 		CORSOrigins:           splitCSV(getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")),
 		RatePerMinute:         getenvInt("RATE_LIMIT_PER_MINUTE", 180),
 		RateBurst:             getenvInt("RATE_LIMIT_BURST", 40),
+		AnonUploadLimit:       getenvInt("ANON_UPLOAD_LIMIT", 3),
+		AuthUploadLimit:       getenvInt("AUTH_UPLOAD_LIMIT", 10),
 		ArtifactTTL:           getenvDuration("ARTIFACT_TTL", 168*time.Hour),
 		CleanupInterval:       getenvDuration("CLEANUP_INTERVAL", time.Hour),
 		OCRProvider:           getenv("OCR_PROVIDER", "auto"),

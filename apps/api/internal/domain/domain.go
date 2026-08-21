@@ -84,6 +84,7 @@ const (
 	CodeInternal              = "INTERNAL_ERROR"
 	CodeUnauthorized          = "UNAUTHORIZED"
 	CodeRateLimited           = "RATE_LIMITED"
+	CodeQuotaExceeded         = "QUOTA_EXCEEDED"
 )
 
 // AppError is a domain error with API mapping metadata.

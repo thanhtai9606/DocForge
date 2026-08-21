@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../../services/api/client'
+import { ApiClientError } from '../../types/api'
 
 const ALL_FORMATS = ['markdown', 'docx', 'json'] as const
 
@@ -12,6 +13,14 @@ export function UploadPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [quota, setQuota] = useState<{ tier: string; limit: number; remaining: number } | null>(null)
+
+  useEffect(() => {
+    api
+      .uploadQuota()
+      .then((q) => setQuota({ tier: q.tier, limit: q.limit, remaining: q.remaining }))
+      .catch(() => undefined)
+  }, [])
 
   function toggleFormat(f: string) {
     setFormats((prev) => (prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f]))
@@ -35,9 +44,19 @@ export function UploadPage() {
     setError('')
     try {
       const res = await api.uploadDocument(file, formats, setProgress)
+      if (typeof res.quota_remaining === 'number') {
+        setQuota((prev) =>
+          prev ? { ...prev, remaining: res.quota_remaining as number } : { tier: 'anonymous', limit: 3, remaining: res.quota_remaining as number },
+        )
+      }
       navigate(`/processing/${res.document_id}`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
+      if (err instanceof ApiClientError && err.code === 'QUOTA_EXCEEDED') {
+        setError('Upload limit reached. Sign in to get up to 10 uploads.')
+        setQuota((prev) => (prev ? { ...prev, remaining: 0 } : prev))
+      } else {
+        setError(err instanceof Error ? err.message : 'Upload failed')
+      }
     } finally {
       setBusy(false)
     }
@@ -49,6 +68,17 @@ export function UploadPage() {
         <div>
           <h1>Upload</h1>
           <p>Drop a PDF, choose outputs, and start processing.</p>
+          {quota ? (
+            <p className="muted">
+              {quota.remaining} of {quota.limit} uploads remaining
+              {quota.tier === 'anonymous' ? (
+                <>
+                  {' '}
+                  — <Link to="/login">Sign in</Link> for up to 10.
+                </>
+              ) : null}
+            </p>
+          ) : null}
         </div>
       </div>
       <form className="upload-form" onSubmit={onSubmit}>
@@ -84,8 +114,8 @@ export function UploadPage() {
         </fieldset>
         {progress > 0 && busy ? <div className="bar"><span style={{ width: `${progress}%` }} /></div> : null}
         {error ? <p className="error">{error}</p> : null}
-        <button type="submit" disabled={busy}>
-          {busy ? 'Uploading…' : 'Start processing'}
+        <button type="submit" disabled={busy || quota?.remaining === 0}>
+          {busy ? 'Uploading…' : quota?.remaining === 0 ? 'Upload limit reached' : 'Start processing'}
         </button>
       </form>
     </section>

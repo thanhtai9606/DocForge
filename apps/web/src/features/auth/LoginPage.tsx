@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import { useAuth } from '../../app/providers/AuthProvider'
 import { api } from '../../services/api/client'
 
@@ -41,6 +41,11 @@ export function LoginPage() {
           ))}
           {loaded && providers.length === 0 && !bypass && !error ? (
             <p className="muted">No SSO providers configured. Set Google/Microsoft OAuth client env vars on the API.</p>
+          ) : null}
+          {!user && loaded && !error ? (
+            <Link className="sso-btn sso-bypass" to="/upload">
+              Continue as guest (3 free uploads)
+            </Link>
           ) : null}
           {bypass ? (
             <button type="button" className="sso-btn sso-bypass" onClick={() => continueBypass()}>

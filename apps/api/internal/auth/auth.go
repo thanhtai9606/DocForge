@@ -350,22 +350,23 @@ func (s *Service) FrontendCallbackURL(token string) string {
 
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.Bypass || isPublic(r) {
+		ctx := r.Context()
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			if user, err := s.Parse(strings.TrimPrefix(h, "Bearer ")); err == nil {
+				ctx = context.WithValue(ctx, UserKey, user)
+			}
+		}
+		r = r.WithContext(ctx)
+
+		if s.Bypass || isPublic(r) || AllowsGuestAccess(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") {
-			writeUnauthorized(w)
+		if _, ok := UserFromContext(r.Context()); ok {
+			next.ServeHTTP(w, r)
 			return
 		}
-		user, err := s.Parse(strings.TrimPrefix(h, "Bearer "))
-		if err != nil {
-			writeUnauthorized(w)
-			return
-		}
-		ctx := context.WithValue(r.Context(), UserKey, user)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		writeUnauthorized(w)
 	})
 }
 

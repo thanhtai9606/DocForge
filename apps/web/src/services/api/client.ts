@@ -20,7 +20,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const res = await fetch(path, { ...init, headers })
+  const res = await fetch(path, { credentials: 'include', ...init, headers })
   if (res.status === 204) return undefined as T
   const text = await res.text()
   const contentType = res.headers.get('content-type') ?? ''
@@ -44,6 +44,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  uploadQuota() {
+    return request<{ tier: string; limit: number; used: number; remaining: number }>('/api/v1/quota')
+  },
   authProviders() {
     return request<{ providers: { id: string; name: string; login: string }[]; bypass: boolean }>(
       '/api/v1/auth/providers',
@@ -65,9 +68,10 @@ export const api = {
     return request<void>(`/api/v1/documents/${id}`, { method: 'DELETE' })
   },
   uploadDocument(file: File, formats: string[], onProgress?: (pct: number) => void) {
-    return new Promise<{ document_id: string; job_id: string; status: string }>((resolve, reject) => {
+    return new Promise<{ document_id: string; job_id: string; status: string; quota_remaining?: number }>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
       xhr.open('POST', '/api/v1/documents')
+      xhr.withCredentials = true
       const token = getToken()
       if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
       xhr.upload.onprogress = (e) => {

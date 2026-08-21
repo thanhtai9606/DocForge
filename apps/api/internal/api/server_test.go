@@ -14,6 +14,7 @@ import (
 
 	"github.com/thanhtai9606/DocForge/apps/api/internal/api"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/application"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/auth"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/memory"
 )
@@ -73,6 +74,70 @@ func uploadPDF(t *testing.T, h http.Handler, filename string, content []byte, fo
 		t.Fatal(err)
 	}
 	return upload["document_id"].(string), upload["job_id"].(string)
+}
+
+func newQuotaHarness(t *testing.T, bypass bool, anonLimit, authLimit int) *harness {
+	t.Helper()
+	artifacts := memory.NewArtifactRepo()
+	objects := memory.NewObjectStore()
+	svc := &application.Service{
+		Documents: memory.NewDocumentRepo(),
+		Jobs:      memory.NewJobRepo(),
+		Artifacts: artifacts,
+		Objects:   objects,
+		Queue:     memory.NewQueue(),
+		Progress:  memory.NewProgress(),
+		MaxBytes:  1 << 20,
+		MaxPages:  100,
+	}
+	handler := api.NewServer(svc, api.Options{
+		Auth:            auth.New("test-secret", bypass, "http://localhost:5173", "http://localhost:8080", auth.ProviderConfig{}, auth.ProviderConfig{}),
+		Quota:           memory.NewQuotaStore(),
+		AnonUploadLimit: anonLimit,
+		AuthUploadLimit: authLimit,
+	})
+	return &harness{handler: handler, svc: svc, artifacts: artifacts, objects: objects}
+}
+
+func uploadPDFWithCookie(t *testing.T, h http.Handler, guestID, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	fw, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.WriteField("output_formats", "markdown")
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/documents", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	if guestID != "" {
+		req.AddCookie(&http.Cookie{Name: auth.GuestCookieName, Value: guestID})
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestAnonymousUploadQuota(t *testing.T) {
+	h := newQuotaHarness(t, false, 3, 10)
+	pdf := []byte("%PDF-1.4\n%test")
+	for i := 0; i < 3; i++ {
+		rr := uploadPDFWithCookie(t, h.handler, "guest-quota-test", "sample.pdf", pdf)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("upload %d status=%d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+	}
+	rr := uploadPDFWithCookie(t, h.handler, "guest-quota-test", "sample.pdf", pdf)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected quota exceeded, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "QUOTA_EXCEEDED") {
+		t.Fatalf("expected QUOTA_EXCEEDED body=%s", rr.Body.String())
+	}
 }
 
 func TestUploadAndGetJob(t *testing.T) {

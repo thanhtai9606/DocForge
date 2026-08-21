@@ -17,9 +17,11 @@ import (
 	"github.com/thanhtai9606/DocForge/apps/api/internal/artifacts"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/auth"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/domain"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/infrastructure/memory"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/logging"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/metrics"
 	"github.com/thanhtai9606/DocForge/apps/api/internal/middleware"
+	"github.com/thanhtai9606/DocForge/apps/api/internal/quota"
 )
 
 // Server exposes REST handlers.
@@ -27,16 +29,22 @@ type Server struct {
 	Service *application.Service
 	Auth    *auth.Service
 	Metrics *metrics.Registry
+	Quota   quota.Store
+	AnonUploadLimit int
+	AuthUploadLimit int
 }
 
 // Options configures HTTP middleware and auth for Phase 4/5.
 type Options struct {
-	Auth           *auth.Service
-	Metrics        *metrics.Registry
-	CORSOrigins    []string
-	RequestTimeout time.Duration
-	RatePerMinute  int
-	RateBurst      int
+	Auth            *auth.Service
+	Metrics         *metrics.Registry
+	Quota           quota.Store
+	AnonUploadLimit int
+	AuthUploadLimit int
+	CORSOrigins     []string
+	RequestTimeout  time.Duration
+	RatePerMinute   int
+	RateBurst       int
 }
 
 func NewServer(svc *application.Service, opts ...Options) http.Handler {
@@ -44,7 +52,23 @@ func NewServer(svc *application.Service, opts ...Options) http.Handler {
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	s := &Server{Service: svc, Auth: o.Auth, Metrics: o.Metrics}
+	s := &Server{
+		Service:         svc,
+		Auth:            o.Auth,
+		Metrics:         o.Metrics,
+		Quota:           o.Quota,
+		AnonUploadLimit: o.AnonUploadLimit,
+		AuthUploadLimit: o.AuthUploadLimit,
+	}
+	if s.Quota == nil {
+		s.Quota = memory.NewQuotaStore()
+	}
+	if s.AnonUploadLimit <= 0 {
+		s.AnonUploadLimit = 3
+	}
+	if s.AuthUploadLimit <= 0 {
+		s.AuthUploadLimit = 10
+	}
 	if s.Auth == nil {
 		s.Auth = auth.New("", true, "http://localhost:5173", "http://localhost:8080", auth.ProviderConfig{}, auth.ProviderConfig{})
 	}
@@ -85,6 +109,7 @@ func NewServer(svc *application.Service, opts ...Options) http.Handler {
 		r.Get("/auth/{provider}/callback", s.authCallback)
 		r.Get("/auth/me", s.me)
 		r.Post("/auth/logout", s.logout)
+		r.Get("/quota", s.uploadQuota)
 
 		r.Get("/documents", s.listDocuments)
 		r.Post("/documents", s.createDocument)
@@ -194,6 +219,30 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"documents": items})
 }
 
+func (s *Server) uploadQuota(w http.ResponseWriter, r *http.Request) {
+	if s.Auth.Bypass {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"tier":      "development",
+			"limit":     s.AuthUploadLimit,
+			"used":      0,
+			"remaining": s.AuthUploadLimit,
+		})
+		return
+	}
+	subject := resolveQuotaSubject(w, r, s.AnonUploadLimit, s.AuthUploadLimit)
+	used, remaining, err := s.Quota.Peek(r.Context(), subject.Key, subject.Limit)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tier":      subject.Tier,
+		"limit":     subject.Limit,
+		"used":      used,
+		"remaining": remaining,
+	})
+}
+
 func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(s.Service.MaxBytes + (1 << 20)); err != nil {
 		writeError(w, r, domain.NewAppError(domain.CodeInvalidPDF, "invalid multipart form", false))
@@ -211,6 +260,18 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		formats = splitCSV(formats[0])
 	}
 
+	var subject quotaSubject
+	var remaining int
+	if !s.Auth.Bypass {
+		subject = resolveQuotaSubject(w, r, s.AnonUploadLimit, s.AuthUploadLimit)
+		var consumeErr error
+		remaining, consumeErr = s.Quota.Consume(r.Context(), subject.Key, subject.Limit)
+		if consumeErr != nil {
+			writeError(w, r, consumeErr)
+			return
+		}
+	}
+
 	result, err := s.Service.UploadDocument(r.Context(), application.UploadInput{
 		Filename:      header.Filename,
 		ContentType:   header.Header.Get("Content-Type"),
@@ -219,6 +280,9 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		OutputFormats: formats,
 	})
 	if err != nil {
+		if !s.Auth.Bypass {
+			_ = s.Quota.Rollback(r.Context(), subject.Key)
+		}
 		writeError(w, r, err)
 		return
 	}
@@ -226,11 +290,17 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 		s.Metrics.UploadsTotal.Add(1)
 		s.Metrics.JobsTotal.Add(1)
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{
+	payload := map[string]any{
 		"document_id": result.DocumentID,
 		"job_id":      result.JobID,
 		"status":      result.Status,
-	})
+	}
+	if !s.Auth.Bypass {
+		payload["quota_tier"] = subject.Tier
+		payload["quota_limit"] = subject.Limit
+		payload["quota_remaining"] = remaining
+	}
+	writeJSON(w, http.StatusAccepted, payload)
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +647,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status = http.StatusNotFound
 	case domain.CodeUnauthorized:
 		status = http.StatusUnauthorized
-	case domain.CodeRateLimited:
+	case domain.CodeRateLimited, domain.CodeQuotaExceeded:
 		status = http.StatusTooManyRequests
 	case domain.CodeFileTooLarge:
 		status = http.StatusRequestEntityTooLarge
