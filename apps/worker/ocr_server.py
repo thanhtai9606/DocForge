@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""DocForge OCR sidecar (CPU). Rasterize one PDF page and run Tesseract.
+"""DocForge OCR sidecar (CPU). Batch rasterize + Tesseract/RapidOCR.
 
-Does not read or write job/DB/orchestrator state. Go worker calls POST /v1/ocr.
+Does not read or write job/DB/orchestrator state. Go worker calls POST /v1/ocr or /v1/ocr/batch.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -14,19 +15,29 @@ import subprocess
 import tempfile
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+
+from PIL import Image
 
 ADDR = os.environ.get("OCR_ADDR", "0.0.0.0:8090")
-DPI = int(os.environ.get("OCR_DPI", "200"))
+DPI = int(os.environ.get("OCR_DPI", "150"))
 TIMEOUT = int(os.environ.get("OCR_TIMEOUT_SEC", "120"))
 MAX_BODY = int(os.environ.get("OCR_MAX_BODY", str(80 * 1024 * 1024)))
-MAX_CONCURRENT = max(1, int(os.environ.get("OCR_MAX_CONCURRENT", "2")))
+MAX_CONCURRENT = max(1, int(os.environ.get("OCR_MAX_CONCURRENT", "4")))
 PDF_CACHE_SIZE = max(4, int(os.environ.get("OCR_PDF_CACHE_SIZE", "16")))
+MAX_EDGE = int(os.environ.get("OCR_MAX_EDGE", "2200"))
+OCR_ENGINE = os.environ.get("OCR_ENGINE", "auto").strip().lower()
+TESS_OEM = os.environ.get("OCR_TESS_OEM", "1")
+TESS_PSM = os.environ.get("OCR_TESS_PSM", "6")
 
 LANG_MAP = {"vi": "vie", "en": "eng", "vie": "vie", "eng": "eng", "vn": "vie"}
 
 _ocr_sem = threading.Semaphore(MAX_CONCURRENT)
+_rapid_lock = threading.Lock()
+_rapid_engine: Any = None
 
 
 class PDFCache:
@@ -83,16 +94,33 @@ def tess_version() -> str:
         return "unknown"
 
 
-def render_page(pdf_path: Path, page: int) -> bytes:
+def preprocess_png(png: bytes) -> bytes:
+    with Image.open(io.BytesIO(png)) as im:
+        im = im.convert("L")
+        width, height = im.size
+        max_edge = max(width, height)
+        if max_edge > MAX_EDGE:
+            scale = MAX_EDGE / max_edge
+            im = im.resize((max(1, int(width * scale)), max(1, int(height * scale))), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="PNG", optimize=True)
+        return out.getvalue()
+
+
+def render_pages(pdf_path: Path, page_numbers: list[int]) -> dict[int, bytes]:
+    if not page_numbers:
+        return {}
+    wanted = set(page_numbers)
+    first, last = min(page_numbers), max(page_numbers)
     with tempfile.TemporaryDirectory(prefix="docforge-ocr-") as td:
         prefix = Path(td) / "page"
         subprocess.run(
             [
                 "pdftoppm",
                 "-f",
-                str(page),
+                str(first),
                 "-l",
-                str(page),
+                str(last),
                 "-png",
                 "-r",
                 str(DPI),
@@ -103,10 +131,18 @@ def render_page(pdf_path: Path, page: int) -> bytes:
             capture_output=True,
             timeout=TIMEOUT,
         )
-        pngs = sorted(Path(td).glob("page*.png"))
-        if not pngs:
-            raise RuntimeError("pdftoppm produced no image")
-        return pngs[0].read_bytes()
+        out: dict[int, bytes] = {}
+        for png in sorted(Path(td).glob("page-*.png")):
+            try:
+                page_num = int(png.stem.rsplit("-", 1)[-1])
+            except ValueError:
+                continue
+            if page_num in wanted:
+                out[page_num] = png.read_bytes()
+        missing = wanted - set(out.keys())
+        if missing:
+            raise RuntimeError(f"pdftoppm missing pages: {sorted(missing)}")
+        return out
 
 
 def parse_tsv(tsv: str) -> tuple[str, float]:
@@ -138,19 +174,112 @@ def parse_tsv(tsv: str) -> tuple[str, float]:
     return " ".join(words), avg
 
 
-def ocr_image(png: bytes, langs) -> tuple[str, float]:
+def ocr_tesseract(png: bytes, langs) -> tuple[str, float]:
+    png = preprocess_png(png)
     with tempfile.TemporaryDirectory(prefix="docforge-tess-") as td:
         img = Path(td) / "page.png"
         img.write_bytes(png)
         out_base = Path(td) / "out"
         subprocess.run(
-            ["tesseract", str(img), str(out_base), "-l", tess_langs(langs), "--psm", "3", "tsv"],
+            [
+                "tesseract",
+                str(img),
+                str(out_base),
+                "-l",
+                tess_langs(langs),
+                "--oem",
+                TESS_OEM,
+                "--psm",
+                TESS_PSM,
+                "tsv",
+            ],
             check=True,
             capture_output=True,
             timeout=TIMEOUT,
         )
         tsv = Path(str(out_base) + ".tsv").read_text(encoding="utf-8", errors="replace")
         return parse_tsv(tsv)
+
+
+def _rapid_client():
+    global _rapid_engine
+    with _rapid_lock:
+        if _rapid_engine is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _rapid_engine = RapidOCR()
+        return _rapid_engine
+
+
+def ocr_rapid(png: bytes, _langs) -> tuple[str, float]:
+    import numpy as np
+
+    png = preprocess_png(png)
+    img = np.array(Image.open(io.BytesIO(png)))
+    result, _ = _rapid_client()(img)
+    if not result:
+        return "", 0.0
+    words: list[str] = []
+    confs: list[float] = []
+    for item in result:
+        if len(item) < 3:
+            continue
+        text = str(item[1]).strip()
+        if not text:
+            continue
+        try:
+            conf = float(item[2])
+        except (TypeError, ValueError):
+            conf = 0.0
+        words.append(text)
+        confs.append(max(0.0, min(1.0, conf)))
+    avg = sum(confs) / len(confs) if confs else 0.0
+    return " ".join(words), avg
+
+
+def ocr_image(png: bytes, langs) -> tuple[str, float, str]:
+    engine = OCR_ENGINE
+    if engine == "auto":
+        try:
+            text, conf = ocr_rapid(png, langs)
+            if text.strip():
+                return text, conf, "rapidocr"
+        except Exception:
+            pass
+        text, conf = ocr_tesseract(png, langs)
+        return text, conf, "tesseract"
+    if engine == "rapidocr":
+        text, conf = ocr_rapid(png, langs)
+        return text, conf, "rapidocr"
+    text, conf = ocr_tesseract(png, langs)
+    return text, conf, "tesseract"
+
+
+def ocr_page_number(png: bytes, langs, page_number: int) -> dict[str, Any]:
+    text, conf, provider = ocr_image(png, langs)
+    detected = langs[0] if langs else "und"
+    return {
+        "page_number": page_number,
+        "text": text,
+        "confidence": round(conf, 4),
+        "language": LANG_MAP.get(str(detected).lower(), str(detected)),
+        "engine": provider,
+    }
+
+
+def ocr_batch(pdf_path: Path, page_numbers: list[int], langs) -> list[dict[str, Any]]:
+    pages = sorted(set(page_numbers))
+    images = render_pages(pdf_path, pages)
+    results: list[dict[str, Any]] = []
+    workers = min(MAX_CONCURRENT, max(1, len(pages)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(ocr_page_number, images[page_num], langs, page_num): page_num for page_num in pages
+        }
+        for fut in as_completed(futures):
+            results.append(fut.result())
+    results.sort(key=lambda item: int(item["page_number"]))
+    return results
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -171,32 +300,97 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "status": "ok",
-                    "provider": "tesseract",
+                    "provider": "docforge-ocr",
                     "version": tess_version(),
+                    "engine": OCR_ENGINE,
                     "max_concurrent": MAX_CONCURRENT,
                     "timeout_sec": TIMEOUT,
+                    "dpi": DPI,
                 },
             )
             return
         self._json(404, {"error": "not found"})
 
-    def do_POST(self) -> None:  # noqa: N802
-        path = self.path.split("?", 1)[0]
-        if path not in ("/v1/ocr", "/ocr"):
-            self._json(404, {"error": "not found"})
-            return
+    def _read_json_body(self) -> tuple[dict | None, str | None]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
         if length <= 0 or length > MAX_BODY:
-            self._json(400, {"error": "invalid body"})
-            return
+            return None, "invalid body"
         try:
-            req = json.loads(self.rfile.read(length))
+            return json.loads(self.rfile.read(length)), None
         except json.JSONDecodeError:
-            self._json(400, {"error": "invalid json"})
+            return None, "invalid json"
+
+    def _decode_pdf(self, req: dict) -> tuple[bytes | None, str | None]:
+        pdf_b64 = req.get("pdf_base64") or req.get("payload_base64") or ""
+        if not pdf_b64:
+            return None, "pdf_base64 required"
+        try:
+            return base64.b64decode(pdf_b64), None
+        except Exception:
+            return None, "invalid pdf_base64"
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        if path not in ("/v1/ocr", "/ocr", "/v1/ocr/batch", "/ocr/batch"):
+            self._json(404, {"error": "not found"})
             return
+        req, err = self._read_json_body()
+        if err or req is None:
+            self._json(400, {"error": err or "invalid body"})
+            return
+        langs = req.get("language") or ["eng"]
+        if isinstance(langs, str):
+            langs = [langs]
+        pdf, err = self._decode_pdf(req)
+        if err or pdf is None:
+            self._json(400, {"error": err or "pdf_base64 required"})
+            return
+        document_id = str(req.get("document_id") or "")
+
+        if path in ("/v1/ocr/batch", "/ocr/batch"):
+            raw_pages = req.get("page_numbers") or req.get("pages") or []
+            if not isinstance(raw_pages, list) or not raw_pages:
+                self._json(400, {"error": "page_numbers required"})
+                return
+            page_numbers: list[int] = []
+            for item in raw_pages:
+                try:
+                    page = int(item)
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "invalid page_numbers"})
+                    return
+                if page < 1:
+                    self._json(400, {"error": "page_numbers must be >= 1"})
+                    return
+                page_numbers.append(page)
+            try:
+                with _ocr_sem:
+                    pdf_path = _pdf_cache.materialize(document_id, pdf)
+                    pages = ocr_batch(pdf_path, page_numbers, langs)
+            except subprocess.TimeoutExpired:
+                self._json(504, {"error": f"ocr timed out after {TIMEOUT}s"})
+                return
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or exc.stdout or b"").decode("utf-8", errors="replace")[:500]
+                self._json(502, {"error": "ocr failed", "detail": detail})
+                return
+            except Exception as exc:
+                self._json(502, {"error": str(exc)})
+                return
+            self._json(
+                200,
+                {
+                    "pages": pages,
+                    "provider": "docforge-ocr",
+                    "version": tess_version(),
+                    "engine": OCR_ENGINE,
+                },
+            )
+            return
+
         try:
             page = int(req.get("page_number") or 0)
         except (TypeError, ValueError):
@@ -204,24 +398,11 @@ class Handler(BaseHTTPRequestHandler):
         if page < 1:
             self._json(400, {"error": "page_number must be >= 1"})
             return
-        langs = req.get("language") or ["eng"]
-        if isinstance(langs, str):
-            langs = [langs]
-        pdf_b64 = req.get("pdf_base64") or req.get("payload_base64") or ""
-        if not pdf_b64:
-            self._json(400, {"error": "pdf_base64 required"})
-            return
-        try:
-            pdf = base64.b64decode(pdf_b64)
-        except Exception:
-            self._json(400, {"error": "invalid pdf_base64"})
-            return
-        document_id = str(req.get("document_id") or "")
         try:
             with _ocr_sem:
                 pdf_path = _pdf_cache.materialize(document_id, pdf)
-                png = render_page(pdf_path, page)
-                text, conf = ocr_image(png, langs)
+                images = render_pages(pdf_path, [page])
+                result = ocr_page_number(images[page], langs, page)
         except subprocess.TimeoutExpired:
             self._json(504, {"error": f"ocr timed out after {TIMEOUT}s"})
             return
@@ -232,14 +413,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._json(502, {"error": str(exc)})
             return
-        detected = langs[0] if langs else "und"
         self._json(
             200,
             {
-                "text": text,
-                "confidence": round(conf, 4),
-                "language": LANG_MAP.get(str(detected).lower(), str(detected)),
-                "provider": "tesseract",
+                "text": result["text"],
+                "confidence": result["confidence"],
+                "language": result["language"],
+                "provider": result["engine"],
                 "version": tess_version(),
                 "page_number": page,
             },
@@ -253,7 +433,7 @@ def main() -> None:
     httpd = ThreadingHTTPServer((host, int(port_s)), Handler)
     print(
         f"[ocr] listening on {host}:{port_s} "
-        f"(concurrent={MAX_CONCURRENT}, timeout={TIMEOUT}s, dpi={DPI})",
+        f"(engine={OCR_ENGINE}, concurrent={MAX_CONCURRENT}, timeout={TIMEOUT}s, dpi={DPI})",
         flush=True,
     )
     httpd.serve_forever()

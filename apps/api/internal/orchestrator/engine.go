@@ -63,6 +63,19 @@ type OCRResult struct {
 	Language   string
 }
 
+// OCRBatchRequest sends multiple pages from one PDF to a batch-capable provider.
+type OCRBatchRequest struct {
+	DocumentID  string
+	PageNumbers []int
+	Language    []string
+	Payload     []byte
+}
+
+// OCRBatchProcessor is optional; HTTP sidecar implements batch OCR for scanned PDFs.
+type OCRBatchProcessor interface {
+	ProcessBatch(ctx context.Context, req OCRBatchRequest) (map[int]OCRResult, error)
+}
+
 // Observer records pipeline timings. Optional; nil is ignored.
 type Observer interface {
 	ObserveOCR(d time.Duration, err error)
@@ -326,109 +339,130 @@ func pagesFromExtract(extracted *pdfx.DocumentText) []cdom.Page {
 
 func (e *Engine) fillMixedPages(ctx context.Context, job *domain.Job, doc *domain.Document, pdf []byte, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
 	pages := make([]cdom.Page, len(extracted.Pages))
-	var eg errgroup.Group
-	sem := make(chan struct{}, e.parallelOCR())
-	var mu sync.Mutex
-	var ocrErr error
-	ocrNeeded := 0
-	for _, p := range extracted.Pages {
-		if p.CharCount < 40 {
-			ocrNeeded++
-		}
-	}
-	ocrDone := 0
 	orderBase := make([]int, len(extracted.Pages))
 	running := 0
+	ocrPages := make([]int, 0)
 	for i, p := range extracted.Pages {
 		orderBase[i] = running
 		running += len(p.Blocks)
 		if p.CharCount < 40 {
-			running++ // placeholder for OCR block
+			running++
+			ocrPages = append(ocrPages, p.PageNumber)
 		}
 	}
 	for i, p := range extracted.Pages {
-		i, p := i, p
 		if p.CharCount >= 40 {
 			blocks, _ := pdfx.ToCDOMBlocks(p, orderBase[i])
 			pages[i] = cdom.Page{PageNumber: p.PageNumber, Width: p.Width, Height: p.Height, Language: p.Language, Blocks: blocks}
-			continue
 		}
-		eg.Go(func() error {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			blk, err := e.ocrPage(ctx, doc, pdf, p.PageNumber)
-			if err != nil {
-				mu.Lock()
-				ocrErr = err
-				mu.Unlock()
-				return err
-			}
-			pages[i] = cdom.Page{
-				PageNumber: p.PageNumber, Width: p.Width, Height: p.Height, Language: blk.Language,
-				Blocks: []cdom.Block{{
-					ID: fmt.Sprintf("p%d-ocr1", p.PageNumber), Type: cdom.BlockParagraph,
-					BBox: cdom.BBox{72, 72, p.Width - 72, p.Height - 72}, ReadingOrder: orderBase[i] + 1,
-					Confidence: blk.Confidence, Language: blk.Language, Text: blk.Text,
-				}},
-			}
-			if ocrNeeded > 0 {
-				mu.Lock()
-				ocrDone++
-				pct := ocrProgressPct(ocrDone, ocrNeeded, 30, 55)
-				_ = e.setProgress(ctx, job, StageOCR, pct)
-				mu.Unlock()
-			}
-			return nil
-		})
 	}
-	if err := eg.Wait(); err != nil {
+	if len(ocrPages) == 0 {
+		return pages, nil
+	}
+	byPage, err := e.ocrPages(ctx, job, doc, pdf, ocrPages, 30, 55)
+	if err != nil {
 		return nil, err
 	}
-	return pages, ocrErr
+	for i, p := range extracted.Pages {
+		if p.CharCount >= 40 {
+			continue
+		}
+		res, ok := byPage[p.PageNumber]
+		if !ok {
+			return nil, fmt.Errorf("ocr missing page %d", p.PageNumber)
+		}
+		pages[i] = cdom.Page{
+			PageNumber: p.PageNumber, Width: p.Width, Height: p.Height, Language: res.Language,
+			Blocks: []cdom.Block{{
+				ID: fmt.Sprintf("p%d-ocr1", p.PageNumber), Type: cdom.BlockParagraph,
+				BBox: cdom.BBox{72, 72, p.Width - 72, p.Height - 72}, ReadingOrder: orderBase[i] + 1,
+				Confidence: res.Confidence, Language: res.Language, Text: res.Text,
+			}},
+		}
+	}
+	return pages, nil
 }
 
 func (e *Engine) ocrAllPages(ctx context.Context, job *domain.Job, doc *domain.Document, pdf []byte, pageCount int, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
 	if e.OCR == nil {
 		return nil, fmt.Errorf("ocr provider not configured")
 	}
+	pageNumbers := make([]int, pageCount)
+	for i := range pageNumbers {
+		pageNumbers[i] = i + 1
+	}
+	byPage, err := e.ocrPages(ctx, job, doc, pdf, pageNumbers, 35, 58)
+	if err != nil {
+		return nil, err
+	}
 	pages := make([]cdom.Page, pageCount)
-	var eg errgroup.Group
-	sem := make(chan struct{}, e.parallelOCR())
-	var progressMu sync.Mutex
-	ocrDone := 0
 	for i := 0; i < pageCount; i++ {
-		i := i
+		pageNum := i + 1
+		res, ok := byPage[pageNum]
+		if !ok {
+			return nil, fmt.Errorf("ocr missing page %d", pageNum)
+		}
 		width, height := 612.0, 792.0
 		if extracted != nil && i < len(extracted.Pages) {
 			width, height = extracted.Pages[i].Width, extracted.Pages[i].Height
 		}
+		pages[i] = cdom.Page{
+			PageNumber: pageNum, Width: width, Height: height, Language: res.Language,
+			Blocks: []cdom.Block{{
+				ID: fmt.Sprintf("p%d-ocr1", pageNum), Type: cdom.BlockParagraph,
+				BBox: cdom.BBox{72, 72, width - 72, height - 72}, ReadingOrder: pageNum,
+				Confidence: res.Confidence, Language: res.Language, Text: res.Text,
+			}},
+		}
+	}
+	return pages, nil
+}
+
+func (e *Engine) ocrPages(ctx context.Context, job *domain.Job, doc *domain.Document, pdf []byte, pageNumbers []int, progressStart, progressEnd int) (map[int]OCRResult, error) {
+	if len(pageNumbers) == 0 {
+		return map[int]OCRResult{}, nil
+	}
+	langs := []string{"vi", "en"}
+	if batch, ok := e.OCR.(OCRBatchProcessor); ok && len(pageNumbers) > 1 {
+		start := time.Now()
+		byPage, err := batch.ProcessBatch(ctx, OCRBatchRequest{
+			DocumentID: doc.ID, PageNumbers: pageNumbers, Language: langs, Payload: pdf,
+		})
+		if e.Observer != nil {
+			e.Observer.ObserveOCR(time.Since(start), err)
+		}
+		if err == nil {
+			_ = e.setProgress(ctx, job, StageOCR, progressEnd)
+			return byPage, nil
+		}
+	}
+	byPage := make(map[int]OCRResult, len(pageNumbers))
+	var eg errgroup.Group
+	sem := make(chan struct{}, e.parallelOCR())
+	var mu sync.Mutex
+	done := 0
+	for _, pageNum := range pageNumbers {
+		pageNum := pageNum
 		eg.Go(func() error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res, err := e.ocrPage(ctx, doc, pdf, i+1)
+			res, err := e.ocrPage(ctx, doc, pdf, pageNum)
 			if err != nil {
 				return err
 			}
-			pages[i] = cdom.Page{
-				PageNumber: i + 1, Width: width, Height: height, Language: res.Language,
-				Blocks: []cdom.Block{{
-					ID: fmt.Sprintf("p%d-ocr1", i+1), Type: cdom.BlockParagraph,
-					BBox: cdom.BBox{72, 72, width - 72, height - 72}, ReadingOrder: i + 1,
-					Confidence: res.Confidence, Language: res.Language, Text: res.Text,
-				}},
-			}
-			progressMu.Lock()
-			ocrDone++
-			pct := ocrProgressPct(ocrDone, pageCount, 35, 58)
+			mu.Lock()
+			byPage[pageNum] = res
+			done++
+			pct := ocrProgressPct(done, len(pageNumbers), progressStart, progressEnd)
 			_ = e.setProgress(ctx, job, StageOCR, pct)
-			progressMu.Unlock()
+			mu.Unlock()
 			return nil
 		})
 	}
 	if err := eg.Wait(); err != nil {
 		return nil, err
 	}
-	return pages, nil
+	return byPage, nil
 }
 
 func (e *Engine) ocrPage(ctx context.Context, doc *domain.Document, pdf []byte, pageNumber int) (OCRResult, error) {
