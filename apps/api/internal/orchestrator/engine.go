@@ -81,8 +81,10 @@ type Engine struct {
 	Layout    layout.Provider
 	Exporters []export.Exporter
 	Observer  Observer
-	// MaxParallelPages bounds page-level fan-out for extract/OCR.
+	// MaxParallelPages bounds page-level fan-out for PDF text extract.
 	MaxParallelPages int
+	// MaxParallelOCR bounds concurrent OCR calls (HTTP sidecar is CPU-bound).
+	MaxParallelOCR int
 	Now              func() time.Time
 }
 
@@ -111,6 +113,27 @@ func (e *Engine) parallelPages() int {
 		}
 	}
 	return n
+}
+
+func (e *Engine) parallelOCR() int {
+	n := e.MaxParallelOCR
+	if n < 1 {
+		n = 2
+	}
+	if n > 4 {
+		n = 4
+	}
+	return n
+}
+
+func ocrProgressPct(done, total, start, end int) int {
+	if total <= 0 || done <= 0 {
+		return start
+	}
+	if done >= total {
+		return end
+	}
+	return start + (done*(end-start))/total
 }
 
 // Run executes detect → extract/ocr → layout → normalize → export with idempotent artifact reuse.
@@ -206,7 +229,7 @@ func (e *Engine) Run(ctx context.Context, jobID string) (*RunResult, error) {
 		if err := e.checkpoint(ctx, job, StageExtract, 30); err != nil {
 			return e.handleStepErr(ctx, job, doc, err)
 		}
-		pages, err := e.fillMixedPages(ctx, doc, pdfBytes, extracted)
+		pages, err := e.fillMixedPages(ctx, job, doc, pdfBytes, extracted)
 		if err != nil {
 			return nil, e.fail(ctx, job, doc, domain.CodeOCRProviderError, err.Error(), true)
 		}
@@ -216,7 +239,7 @@ func (e *Engine) Run(ctx context.Context, jobID string) (*RunResult, error) {
 		if err := e.checkpoint(ctx, job, StageOCR, 35); err != nil {
 			return e.handleStepErr(ctx, job, doc, err)
 		}
-		pages, err := e.ocrAllPages(ctx, doc, pdfBytes, extracted.PageCount, extracted)
+		pages, err := e.ocrAllPages(ctx, job, doc, pdfBytes, extracted.PageCount, extracted)
 		if err != nil {
 			return nil, e.fail(ctx, job, doc, domain.CodeOCRProviderError, err.Error(), true)
 		}
@@ -301,12 +324,19 @@ func pagesFromExtract(extracted *pdfx.DocumentText) []cdom.Page {
 	return pages
 }
 
-func (e *Engine) fillMixedPages(ctx context.Context, doc *domain.Document, pdf []byte, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
+func (e *Engine) fillMixedPages(ctx context.Context, job *domain.Job, doc *domain.Document, pdf []byte, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
 	pages := make([]cdom.Page, len(extracted.Pages))
 	var eg errgroup.Group
-	sem := make(chan struct{}, e.parallelPages())
+	sem := make(chan struct{}, e.parallelOCR())
 	var mu sync.Mutex
 	var ocrErr error
+	ocrNeeded := 0
+	for _, p := range extracted.Pages {
+		if p.CharCount < 40 {
+			ocrNeeded++
+		}
+	}
+	ocrDone := 0
 	orderBase := make([]int, len(extracted.Pages))
 	running := 0
 	for i, p := range extracted.Pages {
@@ -341,6 +371,13 @@ func (e *Engine) fillMixedPages(ctx context.Context, doc *domain.Document, pdf [
 					Confidence: blk.Confidence, Language: blk.Language, Text: blk.Text,
 				}},
 			}
+			if ocrNeeded > 0 {
+				mu.Lock()
+				ocrDone++
+				pct := ocrProgressPct(ocrDone, ocrNeeded, 30, 55)
+				_ = e.setProgress(ctx, job, StageOCR, pct)
+				mu.Unlock()
+			}
 			return nil
 		})
 	}
@@ -350,13 +387,15 @@ func (e *Engine) fillMixedPages(ctx context.Context, doc *domain.Document, pdf [
 	return pages, ocrErr
 }
 
-func (e *Engine) ocrAllPages(ctx context.Context, doc *domain.Document, pdf []byte, pageCount int, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
+func (e *Engine) ocrAllPages(ctx context.Context, job *domain.Job, doc *domain.Document, pdf []byte, pageCount int, extracted *pdfx.DocumentText) ([]cdom.Page, error) {
 	if e.OCR == nil {
 		return nil, fmt.Errorf("ocr provider not configured")
 	}
 	pages := make([]cdom.Page, pageCount)
 	var eg errgroup.Group
-	sem := make(chan struct{}, e.parallelPages())
+	sem := make(chan struct{}, e.parallelOCR())
+	var progressMu sync.Mutex
+	ocrDone := 0
 	for i := 0; i < pageCount; i++ {
 		i := i
 		width, height := 612.0, 792.0
@@ -378,6 +417,11 @@ func (e *Engine) ocrAllPages(ctx context.Context, doc *domain.Document, pdf []by
 					Confidence: res.Confidence, Language: res.Language, Text: res.Text,
 				}},
 			}
+			progressMu.Lock()
+			ocrDone++
+			pct := ocrProgressPct(ocrDone, pageCount, 35, 58)
+			_ = e.setProgress(ctx, job, StageOCR, pct)
+			progressMu.Unlock()
 			return nil
 		})
 	}

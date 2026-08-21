@@ -51,6 +51,7 @@ func main() {
 		Observer:  metrics.New(),
 		Layout:    nil, // geometric default inside engine
 		Exporters: nil, // json+markdown+docx defaults
+		MaxParallelOCR: cfg.OCRParallelPages,
 	}
 
 	logger.Info("worker listening", "queue", cfg.RabbitQueue, "ocr", ocr.Name())

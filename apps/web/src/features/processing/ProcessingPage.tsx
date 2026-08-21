@@ -65,7 +65,13 @@ export function ProcessingPage() {
 
   const job = liveJob ?? jobQ.data
   const started = job?.created_at ? new Date(job.created_at).getTime() : Date.now()
-  const elapsedSec = Math.max(0, Math.round((Date.now() - started) / 1000))
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!job || (job.status !== 'queued' && job.status !== 'processing')) return
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [job?.status, job?.job_id])
+  const elapsedSec = Math.max(0, Math.round((now - started) / 1000))
 
   return (
     <section className="page narrow">
@@ -93,6 +99,11 @@ export function ProcessingPage() {
             <span style={{ width: `${job.progress}%` }} />
           </div>
           <p className="pct">{job.progress}%</p>
+          {job.stage === 'ocr' && job.status === 'processing' ? (
+            <p className="muted">
+              OCR scan pages — large PDFs can take several minutes. Progress updates as each page finishes.
+            </p>
+          ) : null}
           {job.error ? (
             <p className="error">
               {job.error.code}: {job.error.message}

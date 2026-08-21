@@ -47,6 +47,7 @@ type Config struct {
 	OCRProvider           string
 	OCRURL                string
 	OCRTimeout            time.Duration
+	OCRParallelPages      int
 }
 
 // Load reads configuration from environment variables.
@@ -88,7 +89,8 @@ func Load() (Config, error) {
 		CleanupInterval:       getenvDuration("CLEANUP_INTERVAL", time.Hour),
 		OCRProvider:           getenv("OCR_PROVIDER", "auto"),
 		OCRURL:                getenv("OCR_URL", ""),
-		OCRTimeout:            getenvDuration("OCR_TIMEOUT", 90*time.Second),
+		OCRTimeout:            getenvDuration("OCR_TIMEOUT", 120*time.Second),
+		OCRParallelPages:      getenvInt("OCR_PARALLEL_PAGES", 2),
 	}
 	if cfg.MinIOBucket == "" {
 		return Config{}, fmt.Errorf("MINIO_BUCKET is required")

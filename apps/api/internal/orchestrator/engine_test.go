@@ -153,6 +153,9 @@ func TestEngineScannedUsesOCR(t *testing.T) {
 	if job.Status != domain.JobCompleted {
 		t.Fatalf("job=%+v", job)
 	}
+	if job.Progress != 100 {
+		t.Fatalf("progress=%d", job.Progress)
+	}
 	list, _ := arts.ListByDocument(context.Background(), "doc-s")
 	if len(list) < 2 {
 		t.Fatalf("expected cdom+exports, got %d", len(list))

@@ -6,21 +6,58 @@ Does not read or write job/DB/orchestrator state. Go worker calls POST /v1/ocr.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
-import urllib.error
-import urllib.request
+import threading
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ADDR = os.environ.get("OCR_ADDR", "0.0.0.0:8090")
 DPI = int(os.environ.get("OCR_DPI", "200"))
-TIMEOUT = int(os.environ.get("OCR_TIMEOUT_SEC", "60"))
+TIMEOUT = int(os.environ.get("OCR_TIMEOUT_SEC", "120"))
 MAX_BODY = int(os.environ.get("OCR_MAX_BODY", str(80 * 1024 * 1024)))
+MAX_CONCURRENT = max(1, int(os.environ.get("OCR_MAX_CONCURRENT", "2")))
+PDF_CACHE_SIZE = max(4, int(os.environ.get("OCR_PDF_CACHE_SIZE", "16")))
 
 LANG_MAP = {"vi": "vie", "en": "eng", "vie": "vie", "eng": "eng", "vn": "vie"}
+
+_ocr_sem = threading.Semaphore(MAX_CONCURRENT)
+
+
+class PDFCache:
+    """Reuse decoded PDF files across concurrent page OCR for one document."""
+
+    def __init__(self, max_entries: int) -> None:
+        self._max = max_entries
+        self._lock = threading.Lock()
+        self._entries: OrderedDict[str, Path] = {}
+
+    def materialize(self, document_id: str, pdf: bytes) -> Path:
+        key = document_id.strip() if document_id.strip() else hashlib.sha256(pdf).hexdigest()
+        with self._lock:
+            cached = self._entries.get(key)
+            if cached is not None and cached.exists():
+                self._entries.move_to_end(key)
+                return cached
+            if cached is not None:
+                del self._entries[key]
+
+            td = Path(tempfile.mkdtemp(prefix="docforge-pdf-"))
+            path = td / "in.pdf"
+            path.write_bytes(pdf)
+            self._entries[key] = path
+            while len(self._entries) > self._max:
+                _, old_path = self._entries.popitem(last=False)
+                shutil.rmtree(old_path.parent, ignore_errors=True)
+            return path
+
+
+_pdf_cache = PDFCache(PDF_CACHE_SIZE)
 
 
 def tess_langs(langs) -> str:
@@ -46,10 +83,8 @@ def tess_version() -> str:
         return "unknown"
 
 
-def render_page(pdf_bytes: bytes, page: int) -> bytes:
+def render_page(pdf_path: Path, page: int) -> bytes:
     with tempfile.TemporaryDirectory(prefix="docforge-ocr-") as td:
-        pdf_path = Path(td) / "in.pdf"
-        pdf_path.write_bytes(pdf_bytes)
         prefix = Path(td) / "page"
         subprocess.run(
             [
@@ -132,7 +167,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path.split("?", 1)[0] in ("/healthz", "/health", "/"):
-            self._json(200, {"status": "ok", "provider": "tesseract", "version": tess_version()})
+            self._json(
+                200,
+                {
+                    "status": "ok",
+                    "provider": "tesseract",
+                    "version": tess_version(),
+                    "max_concurrent": MAX_CONCURRENT,
+                    "timeout_sec": TIMEOUT,
+                },
+            )
             return
         self._json(404, {"error": "not found"})
 
@@ -172,9 +216,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self._json(400, {"error": "invalid pdf_base64"})
             return
+        document_id = str(req.get("document_id") or "")
         try:
-            png = render_page(pdf, page)
-            text, conf = ocr_image(png, langs)
+            with _ocr_sem:
+                pdf_path = _pdf_cache.materialize(document_id, pdf)
+                png = render_page(pdf_path, page)
+                text, conf = ocr_image(png, langs)
+        except subprocess.TimeoutExpired:
+            self._json(504, {"error": f"ocr timed out after {TIMEOUT}s"})
+            return
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or b"").decode("utf-8", errors="replace")[:500]
             self._json(502, {"error": "ocr failed", "detail": detail})
@@ -201,7 +251,11 @@ def main() -> None:
     if not host:
         host = "0.0.0.0"
     httpd = ThreadingHTTPServer((host, int(port_s)), Handler)
-    print(f"[ocr] listening on {host}:{port_s}", flush=True)
+    print(
+        f"[ocr] listening on {host}:{port_s} "
+        f"(concurrent={MAX_CONCURRENT}, timeout={TIMEOUT}s, dpi={DPI})",
+        flush=True,
+    )
     httpd.serve_forever()
 
 
