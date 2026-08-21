@@ -1,9 +1,9 @@
-# Optional API service using the published GHCR image.
+# Optional API service using a published container image.
 # Start infra first: docker compose -f deployments/docker-compose.yml up -d
 # Then: docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml up -d api
 services:
   api:
-    image: ghcr.io/${GHCR_OWNER:-thanhtai9606}/docforge-api:${API_IMAGE_TAG:-latest}
+    image: ${DOCKER_REGISTRY:-docker.io}/${DOCKER_NAMESPACE:-becamexidc2020}/docforge-api:${API_IMAGE_TAG:-latest}
     ports:
       - "8080:8080"
     environment:

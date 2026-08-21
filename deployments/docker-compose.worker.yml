@@ -18,7 +18,7 @@ services:
       retries: 8
 
   worker:
-    image: ghcr.io/${GHCR_OWNER:-thanhtai9606}/docforge-worker:${WORKER_IMAGE_TAG:-latest}
+    image: ${DOCKER_REGISTRY:-docker.io}/${DOCKER_NAMESPACE:-becamexidc2020}/docforge-worker:${WORKER_IMAGE_TAG:-latest}
     environment:
       DATABASE_URL: postgres://docforge:docforge@postgres:5432/docforge?sslmode=disable
       REDIS_URL: redis://redis:6379/0

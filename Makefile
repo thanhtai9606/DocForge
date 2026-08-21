@@ -15,19 +15,32 @@ DOCKER_BUILDKIT ?= 1
 export DOCKER_BUILDKIT
 GOOS_DOCKER ?= linux
 GOARCH_DOCKER ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
-DOCKER_REGISTRY ?= ghcr.io
-GHCR_OWNER ?= thanhtai9606
-IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null | tr '/:' '--')
-ifeq ($(strip $(IMAGE_TAG)),)
-IMAGE_TAG := latest
-endif
-
-API_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-api
-WORKER_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-worker
-OCR_IMAGE := $(DOCKER_REGISTRY)/$(GHCR_OWNER)/docforge-ocr
-
 ENV_FILE ?= apps/api/configs/local.env
 ENV_EXAMPLE := apps/api/configs/local.env.example
+
+# Optional docker registry/tag overrides from ENV_FILE (make args still win)
+_read_env = $(shell if [ -f $(ENV_FILE) ]; then grep -E '^$(1)=' $(ENV_FILE) 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$$//'; fi)
+ENV_DOCKER_REGISTRY := $(call _read_env,DOCKER_REGISTRY)
+ENV_DOCKER_NAMESPACE := $(call _read_env,DOCKER_NAMESPACE)
+ENV_IMAGE_TAG := $(call _read_env,IMAGE_TAG)
+ENV_VERSION := $(call _read_env,VERSION)
+
+DOCKER_REGISTRY ?= $(if $(strip $(ENV_DOCKER_REGISTRY)),$(ENV_DOCKER_REGISTRY),docker.io)
+DOCKER_NAMESPACE ?= $(if $(strip $(ENV_DOCKER_NAMESPACE)),$(ENV_DOCKER_NAMESPACE),becamexidc2020)
+GHCR_OWNER ?= $(DOCKER_NAMESPACE)
+DOCKER_IMAGE_PREFIX := $(DOCKER_REGISTRY)/$(DOCKER_NAMESPACE)
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null | tr '/:' '--')
+ifeq ($(strip $(GIT_SHA)),)
+GIT_SHA := latest
+endif
+VERSION ?= $(ENV_VERSION)
+IMAGE_TAG ?= $(if $(strip $(ENV_IMAGE_TAG)),$(ENV_IMAGE_TAG),$(if $(strip $(VERSION)),$(VERSION),$(GIT_SHA)))
+
+API_IMAGE := $(DOCKER_IMAGE_PREFIX)/docforge-api
+WORKER_IMAGE := $(DOCKER_IMAGE_PREFIX)/docforge-worker
+OCR_IMAGE := $(DOCKER_IMAGE_PREFIX)/docforge-ocr
+WEB_IMAGE := $(DOCKER_IMAGE_PREFIX)/docforge-web
+
 COMPOSE_INFRA := docker compose -f deployments/docker-compose.yml
 COMPOSE_API := docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.api.yml
 COMPOSE_WORKER := docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.worker.yml
@@ -38,15 +51,17 @@ COMPOSE_WORKER := docker compose -f deployments/docker-compose.yml -f deployment
 	run-api run-worker run-api-memory run-web run-ocr run-all \
 	infra infra-down infra-logs up down up-api down-api up-worker down-worker \
 	test test-go test-cdom test-api test-web fmt vet lint-web tidy tidy-go clean env codegraph \
-	docker-build-all docker-package docker-push-all docker-login \
-	docker-build-api docker-build-worker docker-build-ocr \
-	docker-push-api docker-push-worker docker-push-ocr
+	docker-build-all docker-package docker-print docker-push-all login docker-login \
+	docker-build-api docker-build-worker docker-build-ocr docker-build-web \
+	docker-push-api docker-push-worker docker-push-ocr docker-push-web
 
 ## help: Show Makefile targets
 help:
 	@echo "DocForge — Makefile targets (run from repo root):"
 	@echo ""
 	@grep -hE '^## ' $(MAKEFILE_LIST) | sed 's/^## /  make /' | column -t -s ':' 2>/dev/null || grep -hE '^## ' $(MAKEFILE_LIST) | sed 's/^## /  make /'
+	@echo ""
+	@echo "  DOCKER_REGISTRY=$(DOCKER_REGISTRY)  DOCKER_NAMESPACE=$(DOCKER_NAMESPACE)  IMAGE_TAG=$(IMAGE_TAG)  VERSION=$(VERSION)  GIT_SHA=$(GIT_SHA)"
 
 # --- Aliases ---
 
@@ -149,21 +164,21 @@ up: infra
 ## down: Alias infra-down
 down: infra-down
 
-## up-api: Infra + API container (GHCR or locally tagged image)
+## up-api: Infra + API container (published or locally tagged image)
 up-api:
-	GHCR_OWNER=$(GHCR_OWNER) API_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_API) up -d
+	DOCKER_REGISTRY=$(DOCKER_REGISTRY) DOCKER_NAMESPACE=$(DOCKER_NAMESPACE) API_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_API) up -d
 
 ## down-api: Stop infra + API overlay
 down-api:
-	GHCR_OWNER=$(GHCR_OWNER) API_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_API) down
+	DOCKER_REGISTRY=$(DOCKER_REGISTRY) DOCKER_NAMESPACE=$(DOCKER_NAMESPACE) API_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_API) down
 
 ## up-worker: Infra + OCR sidecar + Go worker
 up-worker:
-	GHCR_OWNER=$(GHCR_OWNER) WORKER_IMAGE_TAG=$(IMAGE_TAG) OCR_IMAGE=$(OCR_IMAGE):$(IMAGE_TAG) $(COMPOSE_WORKER) up -d --build
+	DOCKER_REGISTRY=$(DOCKER_REGISTRY) DOCKER_NAMESPACE=$(DOCKER_NAMESPACE) WORKER_IMAGE_TAG=$(IMAGE_TAG) OCR_IMAGE=$(OCR_IMAGE):$(IMAGE_TAG) $(COMPOSE_WORKER) up -d --build
 
 ## down-worker: Stop infra + worker overlay
 down-worker:
-	GHCR_OWNER=$(GHCR_OWNER) WORKER_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_WORKER) down
+	DOCKER_REGISTRY=$(DOCKER_REGISTRY) DOCKER_NAMESPACE=$(DOCKER_NAMESPACE) WORKER_IMAGE_TAG=$(IMAGE_TAG) $(COMPOSE_WORKER) down
 
 # --- Quality ---
 
@@ -210,8 +225,31 @@ clean:
 
 # --- Docker (context = repo root; images build Go inside) ---
 
-## docker-build-all: API + Go worker + OCR sidecar images
-docker-build-all: docker-build-api docker-build-worker docker-build-ocr
+define _docker_build_tags
+-t $(1):$(IMAGE_TAG) \
+-t $(1):latest \
+-t $(1):local \
+$(if $(filter-out $(IMAGE_TAG),$(GIT_SHA)),-t $(1):$(GIT_SHA),) \
+$(if $(and $(strip $(VERSION)),$(filter-out $(IMAGE_TAG),$(VERSION))),-t $(1):$(VERSION),)
+endef
+
+define _docker_push_tags
+	@set -e; \
+	img="$(1)"; \
+	echo "Push $$img:$(IMAGE_TAG)"; docker push "$$img:$(IMAGE_TAG)"; \
+	echo "Push $$img:latest"; docker push "$$img:latest"; \
+	if [ "$(IMAGE_TAG)" != "$(GIT_SHA)" ]; then echo "Push $$img:$(GIT_SHA)"; docker push "$$img:$(GIT_SHA)"; fi; \
+	if [ -n "$(strip $(VERSION))" ] && [ "$(IMAGE_TAG)" != "$(VERSION)" ]; then echo "Push $$img:$(VERSION)"; docker push "$$img:$(VERSION)"; fi
+endef
+
+## docker-print: Show registry + tags that build/push will use
+docker-print:
+	@echo "Registry : $(DOCKER_IMAGE_PREFIX)"
+	@echo "IMAGE_TAG: $(IMAGE_TAG)  latest  local  $(GIT_SHA)$(if $(strip $(VERSION)),  $(VERSION),)"
+	@echo "Example  : $(API_IMAGE):$(IMAGE_TAG)  $(WEB_IMAGE):$(IMAGE_TAG)"
+
+## docker-build-all: API + worker + OCR + web dashboard images
+docker-build-all: docker-print docker-build-api docker-build-worker docker-build-ocr docker-build-web
 
 ## docker-package: Alias docker-build-all
 docker-package: docker-build-all
@@ -219,38 +257,73 @@ docker-package: docker-build-all
 ## docker-build-api: Multi-stage API image
 docker-build-api:
 	docker build -f $(API_MOD)/Dockerfile \
-		-t $(API_IMAGE):$(IMAGE_TAG) \
-		-t $(API_IMAGE):local \
+		$(call _docker_build_tags,$(API_IMAGE)) \
 		.
 
 ## docker-build-worker: Multi-stage worker image
 docker-build-worker:
 	docker build -f $(API_MOD)/Dockerfile.worker \
-		-t $(WORKER_IMAGE):$(IMAGE_TAG) \
-		-t $(WORKER_IMAGE):local \
+		$(call _docker_build_tags,$(WORKER_IMAGE)) \
 		.
 
 ## docker-build-ocr: Tesseract CPU OCR sidecar
 docker-build-ocr:
 	docker build -f apps/worker/Dockerfile \
-		-t $(OCR_IMAGE):$(IMAGE_TAG) \
-		-t $(OCR_IMAGE):local \
+		$(call _docker_build_tags,$(OCR_IMAGE)) \
 		-t docforge-ocr:local \
 		apps/worker
 
-## docker-push-all: Push API + worker + OCR (docker login first)
-docker-push-all: docker-push-api docker-push-worker docker-push-ocr
+## docker-build-web: React dashboard (nginx + proxy /api → API service)
+docker-build-web:
+	docker build -f $(WEB)/Dockerfile \
+		$(call _docker_build_tags,$(WEB_IMAGE)) \
+		$(WEB)
+
+## docker-push-all: Push API + worker + OCR + web to Docker Hub (run make login first)
+docker-push-all: docker-push-api docker-push-worker docker-push-ocr docker-push-web
 
 docker-push-api:
-	docker push $(API_IMAGE):$(IMAGE_TAG)
+	$(call _docker_push_tags,$(API_IMAGE))
 
 docker-push-worker:
-	docker push $(WORKER_IMAGE):$(IMAGE_TAG)
+	$(call _docker_push_tags,$(WORKER_IMAGE))
 
 docker-push-ocr:
-	docker push $(OCR_IMAGE):$(IMAGE_TAG)
+	$(call _docker_push_tags,$(OCR_IMAGE))
 
-## docker-login: Hint for GHCR login
+docker-push-web:
+	$(call _docker_push_tags,$(WEB_IMAGE))
+
+## login: Log in to container registry (alias docker-login)
+login: docker-login
+
+## docker-login: Log in to Docker Hub (default) or GHCR when DOCKER_REGISTRY=ghcr.io
 docker-login:
-	@echo "Run: docker login $(DOCKER_REGISTRY) -u USERNAME"
-	@echo "Images: $(API_IMAGE):$(IMAGE_TAG)  $(WORKER_IMAGE):$(IMAGE_TAG)  $(OCR_IMAGE):$(IMAGE_TAG)"
+	@if [ "$(DOCKER_REGISTRY)" = "ghcr.io" ]; then \
+		if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then \
+			echo "Logging in to $(DOCKER_REGISTRY) as $(DOCKER_NAMESPACE) via gh..."; \
+			gh auth token | docker login $(DOCKER_REGISTRY) -u $(DOCKER_NAMESPACE) --password-stdin; \
+		elif [ -n "$$GITHUB_TOKEN" ]; then \
+			echo "Logging in to $(DOCKER_REGISTRY) as $(DOCKER_NAMESPACE) via GITHUB_TOKEN..."; \
+			printf '%s\n' "$$GITHUB_TOKEN" | docker login $(DOCKER_REGISTRY) -u $(DOCKER_NAMESPACE) --password-stdin; \
+		else \
+			echo "GHCR login failed: need gh CLI or GITHUB_TOKEN."; \
+			echo "  gh auth login && make login"; \
+			echo "  GITHUB_TOKEN=<pat> make login"; \
+			exit 1; \
+		fi; \
+	elif [ -n "$$DOCKERHUB_TOKEN" ] || [ -n "$$DOCKER_PASSWORD" ]; then \
+		echo "Logging in to $(DOCKER_REGISTRY) as $(DOCKER_NAMESPACE)..."; \
+		printf '%s\n' "$${DOCKERHUB_TOKEN:-$$DOCKER_PASSWORD}" | docker login $(DOCKER_REGISTRY) -u $(DOCKER_NAMESPACE) --password-stdin; \
+	else \
+		echo "Docker Hub login required before push."; \
+		echo ""; \
+		echo "Option A (recommended):"; \
+		echo "  DOCKERHUB_TOKEN=<access-token> make login"; \
+		echo ""; \
+		echo "Option B (interactive):"; \
+		echo "  docker login $(DOCKER_REGISTRY) -u $(DOCKER_NAMESPACE)"; \
+		echo ""; \
+		echo "Push example: $(API_IMAGE):$(IMAGE_TAG)"; \
+		exit 1; \
+	fi

@@ -10,6 +10,7 @@ export function LoginPage() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [bypass, setBypass] = useState(false)
   const [error, setError] = useState('')
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     api
@@ -19,6 +20,7 @@ export function LoginPage() {
         setBypass(!!res.bypass)
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load SSO providers'))
+      .finally(() => setLoaded(true))
   }, [])
 
   if (ready && user) return <Navigate to="/" replace />
@@ -37,7 +39,7 @@ export function LoginPage() {
               Continue with {p.name}
             </a>
           ))}
-          {providers.length === 0 && !bypass ? (
+          {loaded && providers.length === 0 && !bypass && !error ? (
             <p className="muted">No SSO providers configured. Set Google/Microsoft OAuth client env vars on the API.</p>
           ) : null}
           {bypass ? (

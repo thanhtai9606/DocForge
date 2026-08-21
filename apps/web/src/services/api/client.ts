@@ -23,9 +23,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...init, headers })
   if (res.status === 204) return undefined as T
   const text = await res.text()
-  const data = text ? JSON.parse(text) : {}
+  const contentType = res.headers.get('content-type') ?? ''
+  let data: unknown = {}
+  if (text) {
+    if (contentType.includes('application/json') || text.trimStart().startsWith('{') || text.trimStart().startsWith('[')) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error(`API returned invalid JSON (${res.status})`)
+      }
+    } else if (!res.ok) {
+      throw new Error(`API unavailable (${res.status}). Check that docforge-api is running and /api is proxied correctly.`)
+    }
+  }
   if (!res.ok) {
-    const err = (data.error ?? { code: 'INTERNAL_ERROR', message: res.statusText }) as ApiError
+    const err = ((data as { error?: ApiError }).error ?? { code: 'INTERNAL_ERROR', message: res.statusText }) as ApiError
     throw new ApiClientError(res.status, err)
   }
   return data as T
